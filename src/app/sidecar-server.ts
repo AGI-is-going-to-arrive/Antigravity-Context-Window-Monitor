@@ -3,16 +3,19 @@
  *
  * Pure Node/TypeScript — zero `vscode` imports, zero external npm dependencies.
  * Works seamlessly both inside Antigravity App's `SidecarApp` (`sidecar_sdk`)
- * and as a standalone `127.0.0.1` HTTP server for headless testing / debugging.
+ * and as a standalone `127.0.0.1` HTTP server with strict one-time bootstrap
+ * pairing, pre-body Host/Origin/auth/Content-Type validation, scope-separated
+ * capability sets, and bodyless HTTP 304 ETag caching.
  */
 
 import * as crypto from 'crypto';
-import * as fs from 'fs';
 import * as http from 'http';
+import { isLanguage, tBi, tBiHtml, type Language } from '../i18n-core';
 import type * as net from 'net';
-import * as path from 'path';
+import { getRuntimeVersion, resolveRuntimeBuildId } from '../core/version';
 import {
     generateSessionToken,
+    parseOverlayConversationId,
     validateOverlayBridgeRequest,
 } from './cdp-injector';
 import { getHostBridgeScript, type HostBridgeOptions } from './host-bridge';
@@ -26,35 +29,93 @@ import type {
     SidecarRenderContext,
     SidecarSnapshotPayload,
     SidecarSnapshotQuery,
-    SidecarSnapshotResponse,
     SidecarViewMode,
 } from './sidecar-types';
 
-export const MAX_ACTION_BODY_BYTES = 256 * 1024;
+export const MAX_ACTION_BODY_BYTES = 512 * 1024;
 export const MAX_OVERLAY_ACTION_BODY_BYTES = 16 * 1024;
-export const DEFAULT_SIDECAR_VERSION = '1.17.11';
-export const ALLOWED_IMAGE_FILENAME_RE = /^[a-z0-9-]+\.png$/;
+export const MAX_PAIR_BODY_BYTES = 4 * 1024;
+export const DEFAULT_SIDECAR_VERSION = getRuntimeVersion();
+export const DEFAULT_STANDALONE_PAIRING_TTL_MS = 60_000;
+export const MAX_STANDALONE_SESSIONS = 16;
+export const MAX_PAIRING_FAILURES = 5;
+export const MAX_WORKSPACE_URIS = 64;
+export const MAX_WORKSPACE_URI_LENGTH = 4096;
 
-const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
-const IMAGE_ROUTE_RE = /^\/assets\/images\/([a-z0-9-]+\.png)$/;
+const LOOPBACK_BIND_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
+const LOOPBACK_URL_HOSTNAMES = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
 
-export type SidecarOverlayBridgeCommand =
+export type SidecarAuthScope = 'sdk' | 'standalone' | 'cdp';
+
+export type CdpAllowedOverlayCommand =
+    | 'openPanel'
     | 'refresh'
+    | 'togglePause'
+    | 'focusConversation';
+
+/** Backward-compatible union for `SidecarOverlayBridgeRequest`; runtime CDP enforcement strictly allows only `CDP_ALLOWED_OVERLAY_COMMANDS`. */
+export type SidecarOverlayBridgeCommand =
+    | CdpAllowedOverlayCommand
     | 'openSidecar'
     | 'togglePanel'
-    | 'openPanel'
-    | 'togglePause'
-    | 'focusConversation'
     | 'ping';
 
-const ALLOWED_OVERLAY_BRIDGE_COMMANDS: ReadonlySet<SidecarOverlayBridgeCommand> = new Set([
-    'refresh',
-    'openSidecar',
-    'togglePanel',
+/** Minimal capability set permitted on the CDP overlay action bridge (`cdp` scope). */
+export const CDP_ALLOWED_OVERLAY_COMMANDS: ReadonlySet<CdpAllowedOverlayCommand> = new Set([
     'openPanel',
+    'refresh',
     'togglePause',
     'focusConversation',
-    'ping',
+]);
+
+/** Host-privileged commands restricted strictly to Antigravity App `sdk` scope. */
+export const SDK_ONLY_ACTION_COMMANDS: ReadonlySet<string> = new Set([
+    'applyPluginUpdate',
+    'setupCdpLauncher',
+    'removeCdpLauncher',
+    'revealCdpLauncher',
+    'openStateFile',
+    'revealStateFile',
+    'readGlobalRulesFile',
+    'saveGlobalRulesFile',
+    'openGlobalRulesFile',
+    'revealGlobalRulesFile',
+    'revealPath',
+    'openExternalUrl',
+    'openFileInAuxPane',
+    'historyAction',
+    'registerWorkspaces',
+    'toggleConversation',
+]);
+
+/** Standalone grants only these dashboard actions. Future SDK commands require explicit review here. */
+const STANDALONE_ACTION_COMMANDS: ReadonlySet<string> = new Set([
+    'ping', 'tabShown', 'refresh', 'panelReady', 'getSnapshot', 'switchTab', 'switchLanguage',
+    'syncHostFocus', 'selectConversation', 'pinConversation', 'inspectMember', 'clearInspect',
+    'retargetLockedRoot', 'toggleLockMain', 'toggleLockToMainAgent', 'setLockToMainAgent',
+    'setPrivacyMask', 'togglePrivacyMask', 'togglePause', 'toggleNativeHud',
+    'copyContextReport', 'copyHandoffPrompt', 'previewHandoffV2', 'dismissRecoveryBrief',
+    'dismissAppOnboarding',
+    'exportSettingsBackup', 'importSettingsBackup', 'exportRedactedDiagnostics', 'copyStatePath',
+    'setOrchestratorPricingMode', 'setAppSetting', 'updateSetting', 'setConfig', 'setPanelPref',
+    'setPollingInterval', 'setZoomLevel', 'updateSettings', 'updateAppSettings', 'checkForUpdates', 'recheckCdp',
+    'saveCustomPricing', 'savePricing', 'updatePricingOverrides', 'resetCustomPricing', 'resetPricing',
+    'selectAccount', 'removeAccountSnapshot', 'removeAccount', 'setAccountBillingDay',
+    'calendarFilterSource', 'calendarSetMetric', 'calendarSetPeriod', 'calendarSetView',
+    'calendarSelectDate', 'calendarJumpDate', 'calendarExportCsv', 'calendarExportJson',
+    'calendarExportMarkdown', 'switchCalendarMonth', 'clearCalendarHistory', 'clearToolCatalog',
+]);
+
+/** Commands explicitly permitted to carry a `conversationId` argument. */
+const CONVERSATION_TARGETED_COMMANDS: ReadonlySet<string> = new Set([
+    'selectConversation',
+    'pinConversation',
+    'toggleConversation',
+    'focusConversation',
+    'syncHostFocus',
+    'inspectMember',
+    'retargetLockedRoot',
+    'historyAction',
 ]);
 
 const ALLOWED_OVERLAY_TARGET_TABS: ReadonlySet<CdpOverlayTargetTab> = new Set([
@@ -68,6 +129,18 @@ const ALLOWED_OVERLAY_TARGET_TABS: ReadonlySet<CdpOverlayTargetTab> = new Set([
     'settings',
 ]);
 
+export function isCommandAllowedForScope(scope: SidecarAuthScope, command: string): boolean {
+    const clean = typeof command === 'string' ? command.trim() : '';
+    if (!clean) { return false; }
+    if (scope === 'cdp') {
+        return CDP_ALLOWED_OVERLAY_COMMANDS.has(clean as CdpAllowedOverlayCommand);
+    }
+    if (scope === 'standalone') {
+        return STANDALONE_ACTION_COMMANDS.has(clean);
+    }
+    return true;
+}
+
 export interface SidecarOverlayBridgeRequest {
     command: SidecarOverlayBridgeCommand;
     source?: 'composer' | 'topbar';
@@ -76,6 +149,12 @@ export interface SidecarOverlayBridgeRequest {
     conversationId?: string | null;
     /** True when the Hub is showing a brand-new empty conversation screen before an ID exists. */
     isNewConversation?: boolean;
+    /** Optional monotonic focus revision supplied by overlay focus events. */
+    focusRevision?: number;
+    /** Identified by the authenticated CDP grant. */
+    targetId?: string;
+    /** Optional Hub window identifier. */
+    windowId?: string;
 }
 
 export interface SidecarOverlayBridgeOptions {
@@ -89,20 +168,66 @@ export interface SidecarOverlayBridgeOptions {
 
 export interface SidecarOverlayAwareProvider extends SidecarProvider {
     getOverlayBridgeAuth?(): { token: string; allowedOrigin?: string };
+    validateOverlayBridgeAuth?(token: string, origin?: string, command?: CdpAllowedOverlayCommand): boolean;
+    resolveOverlayTargetId?(token: string, origin: string, command: CdpAllowedOverlayCommand): string | undefined;
     handleOverlayAction?(action: SidecarOverlayBridgeRequest): Promise<SidecarActionResponse | void> | SidecarActionResponse | void;
 }
 
+export interface StandaloneBootstrapPairing {
+    mode: 'one-time-exchange';
+    code: string;
+    codeSha256: string;
+    singleUse: true;
+    ttlMs: number;
+    expiresAtMs: number;
+    exchangeEndpoint: string;
+    deliveryChannel: string;
+}
+
+export interface StandaloneAuthOptions {
+    /** Require one-time pairing before granting access to telemetry/actions (default: true in standalone mode). */
+    requirePairing?: boolean;
+    /** Serve an inert empty pairing HTML shell on unpaired GET / and /full (default: true when requirePairing is true). */
+    unpairedShellOnly?: boolean;
+    /** Single-use bootstrap pairing contract (generated automatically if omitted). */
+    bootstrapPairing?: StandaloneBootstrapPairing;
+    /** Optional clock override for deterministic TTL testing. */
+    now?: () => number;
+    /** Optional callback fired immediately once the single-use pairing code is consumed/burned. */
+    onPairingConsumed?: () => void;
+}
+
 export interface SidecarHandlerOptions {
+    buildId?: string;
     /** Plugin version returned by /api/health and passed to renderHtml. */
     version?: string;
     /** True when hosted by Antigravity App's SidecarApp (injects `/preload.js`). */
     isSidecarEnv?: boolean;
     /** Optional overrides for the injected host bridge script. */
     hostBridgeOptions?: HostBridgeOptions;
-    /** Optional override directory containing bundled offline PNG illustrations. */
-    imagesDir?: string;
     /** Optional auth & handler config for loopback `POST /api/overlay/action`. */
     overlayBridge?: SidecarOverlayBridgeOptions;
+    /** Optional standalone HTTP pairing and session authentication config. */
+    standaloneAuth?: StandaloneAuthOptions;
+    /** Bound loopback port (set automatically by `startStandaloneServer`) for strict Host validation. */
+    boundPort?: number;
+}
+
+export interface SidecarRequestContext {
+    /** Transport layer: `'http'` returns bodyless 304 on ETag match; `'sdk'` returns documented 200 `{ unchanged: true, hash }`. */
+    transport?: 'http' | 'sdk';
+    /** Effective capability scope for the request. */
+    authScope?: SidecarAuthScope;
+    /** Opaque authorized subject identifier included in ETag validators. */
+    authSubject?: string;
+}
+
+export interface SnapshotValidatorContext {
+    authScope: SidecarAuthScope;
+    authSubject: string;
+    viewMode: SidecarViewMode;
+    effectiveLanguage: string;
+    includeHtml: boolean;
 }
 
 export interface RenderedPageResult {
@@ -112,22 +237,15 @@ export interface RenderedPageResult {
     headers: Record<string, string>;
 }
 
-export interface AssetImageResult {
-    status: number;
-    contentType: string;
-    body: Buffer | string;
-    headers: Record<string, string>;
-}
-
 export type SidecarSnapshotHttpBody =
     | { unchanged: true; hash: string }
     | {
         unchanged: false;
         hash: string;
         snapshot: SidecarSnapshotPayload;
-        data?: unknown;
         html?: string;
-    };
+    }
+    | null;
 
 export type SidecarActionHttpBody = SidecarActionResponse & {
     text?: string;
@@ -145,12 +263,16 @@ export interface SidecarOverlayActionResult {
 }
 
 export interface SidecarHandler {
-    renderPage(viewMode: SidecarViewMode, rawUrl?: string): Promise<RenderedPageResult>;
+    renderPage(viewMode: SidecarViewMode, rawUrl?: string, windowId?: string, authScope?: SidecarAuthScope, privacyMasked?: boolean): Promise<RenderedPageResult>;
     handleSnapshotQuery(
         query: Record<string, string | string[] | undefined>,
         ifNoneMatch?: string,
+        requestCtx?: SidecarRequestContext,
     ): Promise<{ status: number; headers: Record<string, string>; body: SidecarSnapshotHttpBody }>;
-    handleActionPayload(rawBody: unknown): Promise<{ status: number; body: SidecarActionHttpBody }>;
+    handleActionPayload(
+        rawBody: unknown,
+        requestCtx?: SidecarRequestContext,
+    ): Promise<{ status: number; body: SidecarActionHttpBody }>;
     handleOverlayAction(params: {
         method: string;
         originHeader?: string;
@@ -159,19 +281,22 @@ export interface SidecarHandler {
     }): Promise<SidecarOverlayActionResult>;
     getOverlayBridgeToken(): string;
     setOverlayAllowedOrigin(origin: string | undefined): void;
-    handleAssetImage(filename: string): Promise<AssetImageResult>;
-    listAssetImages(): string[];
-    getHealth(): SidecarHealthResponse;
+    setBoundPort(port: number): void;
+    getBootstrapPairing(): StandaloneBootstrapPairing | undefined;
+    getHealth(): SidecarHealthResponse & { pairingRequired?: boolean };
     handleHttp(req: http.IncomingMessage, res: http.ServerResponse): Promise<void>;
 }
 
 export interface StandaloneServerOptions {
+    buildId?: string;
     port?: number;
     host?: string;
     version?: string;
     hostBridgeOptions?: HostBridgeOptions;
+    /** @deprecated Dead `/assets/images/*` route removed in v1.18; retained as ignored option for caller compatibility. */
     imagesDir?: string;
     overlayBridge?: SidecarOverlayBridgeOptions;
+    standaloneAuth?: StandaloneAuthOptions;
 }
 
 export interface StandaloneServerHandle {
@@ -180,30 +305,27 @@ export interface StandaloneServerHandle {
     port: number;
     url: string;
     overlayBridgeToken: string;
+    /** Single-use bootstrap pairing contract (kept strictly in-process; never logged/printed). */
+    bootstrapPairing?: StandaloneBootstrapPairing;
+    /** Relative pairing exchange endpoint path (`/api/auth/pair`; `/api/pair` is also accepted). */
+    pairingEndpoint?: string;
     close(): Promise<void>;
 }
 
-/** Resolve the bundled static PNG images directory across TS source, repo `out/`, and packaged plugin layouts. */
-export function resolveDefaultImagesDir(explicitDir?: string): string | null {
-    const candidates: string[] = [];
-    if (explicitDir && explicitDir.trim()) {
-        candidates.push(path.resolve(explicitDir));
-    }
-    candidates.push(
-        path.resolve(__dirname, '..', 'images'),
-        path.resolve(__dirname, '..', '..', 'src', 'images'),
-        path.resolve(__dirname, '..', '..', 'images'),
-    );
-    for (const candidate of candidates) {
-        try {
-            if (fs.existsSync(candidate) && fs.statSync(candidate).isDirectory()) {
-                return candidate;
-            }
-        } catch {
-            // Try next candidate
-        }
-    }
-    return null;
+function sha256Hex(value: string): string {
+    return crypto.createHash('sha256').update(value, 'utf8').digest('hex');
+}
+
+function sha256Buf(value: string): Buffer {
+    return crypto.createHash('sha256').update(value, 'utf8').digest();
+}
+
+function constantTimeHexEquals(aHex: string, bHex: string): boolean {
+    if (!aHex || !bHex || aHex.length !== bHex.length) { return false; }
+    const a = Buffer.from(aHex, 'utf8');
+    const b = Buffer.from(bHex, 'utf8');
+    if (a.length !== b.length) { return false; }
+    return crypto.timingSafeEqual(a, b);
 }
 
 /** Deterministic canonical JSON stringification so ETag hashes are stable regardless of key order. */
@@ -234,6 +356,60 @@ export function computeSnapshotHash(snapshot: unknown): string {
     return crypto.createHash('sha256').update(stableStringify(hashInput)).digest('hex').slice(0, 32);
 }
 
+function extractPrivacyMasked(snapshot: SidecarSnapshotPayload): boolean | null {
+    const rec = snapshot as Record<string, unknown>;
+    if (typeof rec.privacyMasked === 'boolean') { return rec.privacyMasked; }
+    const meta = rec.meta && typeof rec.meta === 'object' ? rec.meta as Record<string, unknown> : null;
+    if (meta && typeof meta.privacyMasked === 'boolean') { return meta.privacyMasked; }
+    const data = rec.data && typeof rec.data === 'object' ? rec.data as Record<string, unknown> : null;
+    if (data && typeof data.privacyMasked === 'boolean') { return data.privacyMasked; }
+    return null;
+}
+
+function extractDataRevision(snapshot: SidecarSnapshotPayload): string | number | null {
+    const rec = snapshot as Record<string, unknown>;
+    if (typeof rec.dataRevision === 'number' || typeof rec.dataRevision === 'string') {
+        return rec.dataRevision;
+    }
+    const meta = rec.meta && typeof rec.meta === 'object' ? rec.meta as Record<string, unknown> : null;
+    if (meta) {
+        if (typeof meta.dataRevision === 'number' || typeof meta.dataRevision === 'string') {
+            return meta.dataRevision;
+        }
+        if (typeof meta.stateRevision === 'number' || typeof meta.stateRevision === 'string') {
+            return meta.stateRevision;
+        }
+    }
+    return null;
+}
+
+/**
+ * Compute an HTTP/SDK validator ETag that binds the snapshot hash to the
+ * authorized subject, viewMode, effective language, privacy mask state,
+ * `includeHtml` flag, and real data revision.
+ */
+export function computeSnapshotValidatorEtag(
+    snapshot: SidecarSnapshotPayload,
+    context: SnapshotValidatorContext,
+): string {
+    const snapshotHash = computeSnapshotHash(snapshot);
+    const privacyMasked = extractPrivacyMasked(snapshot);
+    const dataRevision = extractDataRevision(snapshot);
+    const effectiveLanguage = context.effectiveLanguage || (typeof snapshot.language === 'string' ? snapshot.language : '');
+    const validatorInput = {
+        v: 2,
+        authScope: context.authScope,
+        authSubject: context.authSubject,
+        viewMode: context.viewMode,
+        effectiveLanguage,
+        privacyMasked,
+        includeHtml: context.includeHtml,
+        dataRevision,
+        snapshotHash,
+    };
+    return crypto.createHash('sha256').update(stableStringify(validatorInput)).digest('hex').slice(0, 32);
+}
+
 function normalizeEtag(raw: string | undefined): string {
     if (!raw || typeof raw !== 'string') { return ''; }
     let trimmed = raw.trim();
@@ -244,28 +420,35 @@ function normalizeEtag(raw: string | undefined): string {
     return trimmed;
 }
 
+function matchesClientEtag(
+    ifNoneMatch: string | undefined,
+    queryEtag: string | undefined,
+    currentHash: string,
+): boolean {
+    if (!currentHash) { return false; }
+    const normalizedQuery = normalizeEtag(queryEtag);
+    if (normalizedQuery && normalizedQuery === currentHash) {
+        return true;
+    }
+    if (!ifNoneMatch || typeof ifNoneMatch !== 'string') {
+        return false;
+    }
+    const trimmed = ifNoneMatch.trim();
+    if (!trimmed) { return false; }
+    if (trimmed === '*') { return true; }
+    const parts = trimmed.split(',');
+    for (const part of parts) {
+        if (normalizeEtag(part) === currentHash) {
+            return true;
+        }
+    }
+    return false;
+}
+
 function firstString(value: string | string[] | undefined): string | undefined {
     if (typeof value === 'string') { return value; }
     if (Array.isArray(value) && typeof value[0] === 'string') { return value[0]; }
     return undefined;
-}
-
-function parseWorkspaceUrisParam(raw: string | undefined): string[] | undefined {
-    if (!raw) { return undefined; }
-    const trimmed = raw.trim();
-    if (!trimmed) { return undefined; }
-    if (trimmed.startsWith('[')) {
-        try {
-            const parsed = JSON.parse(trimmed);
-            if (Array.isArray(parsed)) {
-                return parsed.filter((item): item is string => typeof item === 'string' && item.length > 0);
-            }
-        } catch {
-            // Fall through to comma-split fallback
-        }
-    }
-    const items = trimmed.split(',').map(s => s.trim()).filter(Boolean);
-    return items.length > 0 ? items : undefined;
 }
 
 function parseViewMode(raw: string | undefined, fallback: SidecarViewMode): SidecarViewMode {
@@ -273,6 +456,192 @@ function parseViewMode(raw: string | undefined, fallback: SidecarViewMode): Side
         return raw;
     }
     return fallback;
+}
+
+function sanitizeOptionalId(raw: unknown, maxLen = 128): string | undefined {
+    if (typeof raw !== 'string') { return undefined; }
+    const trimmed = raw.trim();
+    if (!trimmed || trimmed.length > maxLen || /[\r\n\0]/.test(trimmed)) {
+        return undefined;
+    }
+    return trimmed;
+}
+
+/**
+ * Strictly validate the incoming HTTP `Host` header against loopback addresses
+ * (and bound port when known) to block DNS-rebinding attacks before body reads.
+ */
+export function validateLoopbackHostHeader(
+    hostHeader: string | string[] | undefined,
+    expectedPort?: number,
+): { ok: true; host: string; hostname: string; port: number | null; origin: string } | { ok: false; status: number; error: string } {
+    if (typeof hostHeader !== 'string') {
+        return { ok: false, status: 403, error: 'Missing or invalid Host header' };
+    }
+    const raw = hostHeader.trim();
+    if (!raw || /[\s@/?#\\]/.test(raw) || /[\u0000-\u001f\u007f]/.test(raw)) {
+        return { ok: false, status: 403, error: 'Malformed Host header' };
+    }
+    let parsed: URL;
+    try {
+        parsed = new URL(`http://${raw}`);
+    } catch {
+        return { ok: false, status: 403, error: 'Invalid Host header' };
+    }
+    if (!LOOPBACK_URL_HOSTNAMES.has(parsed.hostname)) {
+        return { ok: false, status: 403, error: 'Non-loopback Host header rejected' };
+    }
+    const parsedPort = parsed.port ? Number(parsed.port) : null;
+    if (parsedPort !== null && (!Number.isSafeInteger(parsedPort) || parsedPort < 1 || parsedPort > 65535)) {
+        return { ok: false, status: 403, error: 'Invalid Host port' };
+    }
+    if (typeof expectedPort === 'number' && expectedPort > 0) {
+        const effectivePort = parsedPort ?? 80;
+        if (effectivePort !== expectedPort) {
+            return { ok: false, status: 403, error: 'Host port does not match bound server port' };
+        }
+    }
+    return {
+        ok: true,
+        host: raw,
+        hostname: parsed.hostname,
+        port: parsedPort,
+        origin: parsed.origin,
+    };
+}
+
+function isJsonContentType(contentTypeHeader: string | string[] | undefined): boolean {
+    if (typeof contentTypeHeader !== 'string') { return false; }
+    const mediaType = contentTypeHeader.split(';')[0]?.trim().toLowerCase() || '';
+    return mediaType === 'application/json';
+}
+
+function validateSameOriginHeader(params: {
+    originHeader: string | string[] | undefined;
+    refererHeader: string | string[] | undefined;
+    secFetchSiteHeader: string | string[] | undefined;
+    secFetchModeHeader: string | string[] | undefined;
+    secFetchDestHeader?: string | string[] | undefined;
+    expectedOrigin: string;
+    isWrite: boolean;
+    usesBrowserSessionHeader: boolean;
+    isHtmlNavigation?: boolean;
+}): { ok: true } | { ok: false; status: number; error: string } {
+    const secFetchSite = typeof params.secFetchSiteHeader === 'string'
+        ? params.secFetchSiteHeader.trim().toLowerCase()
+        : '';
+    const secFetchMode = typeof params.secFetchModeHeader === 'string'
+        ? params.secFetchModeHeader.trim().toLowerCase()
+        : '';
+    const secFetchDest = typeof params.secFetchDestHeader === 'string'
+        ? params.secFetchDestHeader.trim().toLowerCase()
+        : '';
+
+    if (params.isWrite) {
+        if (secFetchSite && secFetchSite !== 'same-origin') {
+            return { ok: false, status: 403, error: 'Cross-origin write rejected' };
+        }
+    } else if (secFetchSite) {
+        // Different local ports share a site but not an origin.
+        // Reject `same-site` / `cross-site` on all reads; allow `none` only for direct HTML navigations.
+        const allowedReadFetchSite = params.isHtmlNavigation
+            ? (secFetchSite === 'same-origin' || secFetchSite === 'none')
+            : (secFetchSite === 'same-origin');
+        if (!allowedReadFetchSite) {
+            return { ok: false, status: 403, error: 'Cross-origin or same-site cross-port read rejected' };
+        }
+    }
+
+    if (Array.isArray(params.originHeader)) {
+        return { ok: false, status: 403, error: 'Multiple Origin headers rejected' };
+    }
+    const hasOriginHeader = params.originHeader !== undefined;
+    const rawOrigin = typeof params.originHeader === 'string' ? params.originHeader.trim() : '';
+
+    if (hasOriginHeader && !rawOrigin) {
+        return { ok: false, status: 403, error: 'Empty Origin header rejected' };
+    }
+
+    if (rawOrigin) {
+        if (rawOrigin === 'null') {
+            return { ok: false, status: 403, error: 'Null Origin rejected' };
+        }
+        let parsedOrigin: URL;
+        try {
+            parsedOrigin = new URL(rawOrigin);
+        } catch {
+            return { ok: false, status: 403, error: 'Malformed Origin header' };
+        }
+        if ((parsedOrigin.protocol !== 'http:' && parsedOrigin.protocol !== 'https:')
+            || !LOOPBACK_URL_HOSTNAMES.has(parsedOrigin.hostname)
+            || parsedOrigin.origin !== params.expectedOrigin) {
+            return { ok: false, status: 403, error: 'Cross-origin request rejected' };
+        }
+    } else if (params.isWrite) {
+        // Writes using the browser session header or ANY Fetch Metadata header MUST supply same-origin Origin.
+        if (params.usesBrowserSessionHeader) {
+            return { ok: false, status: 403, error: 'Origin header required for browser session write' };
+        }
+        if (secFetchMode || secFetchSite || secFetchDest) {
+            return { ok: false, status: 403, error: 'Origin header required for browser write' };
+        }
+    }
+
+    if (params.isWrite && typeof params.refererHeader === 'string' && params.refererHeader.trim()) {
+        try {
+            const parsedRef = new URL(params.refererHeader.trim());
+            if (parsedRef.origin !== params.expectedOrigin) {
+                return { ok: false, status: 403, error: 'Cross-origin Referer rejected' };
+            }
+        } catch {
+            return { ok: false, status: 403, error: 'Malformed Referer header' };
+        }
+    }
+
+    return { ok: true };
+}
+
+function createDefaultBootstrapPairing(nowMs: number): StandaloneBootstrapPairing {
+    const code = crypto.randomBytes(32).toString('hex');
+    return {
+        mode: 'one-time-exchange',
+        code,
+        codeSha256: sha256Hex(code),
+        singleUse: true,
+        ttlMs: DEFAULT_STANDALONE_PAIRING_TTL_MS,
+        expiresAtMs: nowMs + DEFAULT_STANDALONE_PAIRING_TTL_MS,
+        exchangeEndpoint: '/api/auth/pair',
+        deliveryChannel: 'in-memory',
+    };
+}
+
+/**
+ * Inert, zero-data HTML pairing shell served to unpaired standalone HTTP clients.
+ * Contains ZERO private telemetry, ZERO account/workspace data, and ZERO tokens.
+ */
+export function renderStandalonePairingShellHtml(
+    viewMode: SidecarViewMode,
+    exchangeEndpoint = '/api/auth/pair',
+    version = DEFAULT_SIDECAR_VERSION,
+    language: Language = 'en',
+): string {
+    const safeEndpoint = exchangeEndpoint === '/api/pair' ? '/api/pair' : '/api/auth/pair';
+    const safeVersion = String(version || DEFAULT_SIDECAR_VERSION).replace(/[^0-9A-Za-z._+-]/g, '');
+    const label = (en: string, zh: string) => tBi(en, zh, ' / ', language);
+    const visible = (en: string, zh: string) => tBiHtml(en, zh, ' / ', language);
+    const pairFail = JSON.stringify(label('Pairing failed', '配对失败'));
+    const sessErr = JSON.stringify(label('Session unavailable', '会话不可用'));
+    return `<!DOCTYPE html><html lang="${language === 'zh' ? 'zh-CN' : 'en'}"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Antigravity Context Monitor — ${label('Pair session', '会话配对')}</title><style>body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#0D1014;color:#F2F4F8;display:flex;align-items:center;justify-content:center;min-height:100vh}.acm-pair-card{width:min(420px,calc(100vw - 32px));border:1px solid #232A35;border-radius:12px;padding:24px;background:#14181F;box-sizing:border-box}.acm-pair-card h1{margin:0 0 8px;font-size:17px}.acm-pair-card p{margin:0 0 16px;font-size:13px;color:#8C98A9;line-height:1.5}.acm-pair-card input{width:100%;box-sizing:border-box;padding:10px 12px;border-radius:8px;border:1px solid #2C3544;background:#0D1014;color:#F2F4F8;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;margin-bottom:12px}.acm-pair-card button{width:100%;padding:10px 14px;border-radius:8px;border:0;background:#2258B5;color:#fff;font-weight:600;font-size:13px;cursor:pointer}.acm-pair-status{margin-top:12px;font-size:12px;min-height:18px;color:#F87171}</style></head><body data-acm-surface="app-sidecar" data-acm-view="${viewMode}" data-acm-paired="false"><main class="acm-pair-card" id="acmPairingShell"><h1>Antigravity Context Monitor</h1><p>${visible('Enter the single-use code from your private pairing file to open the dashboard.', '请输入私有配对文件中的一次性配对码以打开面板。')} (v${safeVersion})</p><form id="acmPairingForm" autocomplete="off"><label for="acmPairingCodeInput" style="display:block;font-size:12px;margin-bottom:6px;color:#C2CAD6">${visible('One-time pairing code', '一次性配对码')}</label><input id="acmPairingCodeInput" name="pairingCode" type="password" autocomplete="off" spellcheck="false" required /><button type="submit" id="acmPairingSubmit">${visible('Pair browser session', '配对此浏览器会话')}</button><div class="acm-pair-status" id="acmPairingStatus" role="status" aria-live="polite"></div></form></main><script>(function(){var f=document.getElementById('acmPairingForm'),i=document.getElementById('acmPairingCodeInput'),s=document.getElementById('acmPairingStatus'),k='acm_standalone_session';if(!f||!i)return;async function o(t){var r=await fetch(location.pathname+location.search,{mode:'same-origin',redirect:'error',credentials:'omit',headers:{'X-Monitor-Session':t}});if(!r.ok){if(r.status===401)sessionStorage.removeItem(k);throw new Error(${sessErr}+' (HTTP '+r.status+')')}var h=await r.text();document.open();document.write(h);document.close()}function e(x){if(s)s.textContent=x&&x.message?x.message:${pairFail}}try{var p=sessionStorage.getItem(k);if(p)o(p).catch(e)}catch(_){}f.addEventListener('submit',function(ev){ev.preventDefault();var c=(i.value||'').trim();if(!c)return;if(s)s.textContent='';window.fetch(${JSON.stringify(safeEndpoint)},{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({pairingCode:c})}).then(function(r){if(!r.ok)throw new Error(${pairFail}+' (HTTP '+r.status+')');return r.json()}).then(function(d){i.value='';sessionStorage.setItem(k,d.sessionToken);return o(d.sessionToken)}).catch(e)})})();</script></body></html>`;
+}
+
+function sanitizeInlineStyleTagContent(css: string): string {
+    return css.replace(/<\/style/gi, (match) => `<\\/${match.slice(2)}`);
+}
+
+function sanitizeInlineScriptTagContent(js: string): string {
+    return js
+        .replace(/<\/script/gi, (match) => `<\\/${match.slice(2)}`)
+        .replace(/<!--/g, '<\\!--');
 }
 
 /**
@@ -290,8 +659,8 @@ export function injectSidecarHeadAndScripts(
     },
 ): string {
     let out = html;
-    const themeCss = opts.themeAdapterCss ?? getThemeAdapterStyles();
-    const bridgeJs = opts.hostBridgeScript ?? getHostBridgeScript();
+    const themeCss = sanitizeInlineStyleTagContent(opts.themeAdapterCss ?? getThemeAdapterStyles());
+    const bridgeJs = sanitizeInlineScriptTagContent(opts.hostBridgeScript ?? getHostBridgeScript());
 
     const headSnippets: string[] = [];
     if (opts.isSidecarEnv && !out.includes('src="/preload.js"')) {
@@ -306,17 +675,19 @@ export function injectSidecarHeadAndScripts(
 
     if (headSnippets.length > 0) {
         const injection = headSnippets.join('\n');
+        // Always use callback replacers so `$&`, `$$`, `$'`, `$`` inside minified JS/CSS
+        // are inserted verbatim and can NEVER expand into `</head>` or `<body>`!
         if (/<\/head>/i.test(out)) {
-            out = out.replace(/<\/head>/i, `${injection}\n</head>`);
+            out = out.replace(/<\/head>/i, (match) => `${injection}\n${match}`);
         } else if (/<body[\s>]/i.test(out)) {
-            out = out.replace(/<body([\s>])/i, `${injection}\n<body$1`);
+            out = out.replace(/<body([\s>])/i, (match) => `${injection}\n${match}`);
         } else {
             out = `${injection}\n${out}`;
         }
     }
 
     if (/<body([^>]*)>/i.test(out)) {
-        out = out.replace(/<body([^>]*)>/i, (full, attrs: string) => {
+        out = out.replace(/<body([^>]*)>/i, (_full, attrs: string) => {
             let nextAttrs = attrs;
             if (!/data-acm-surface=/i.test(nextAttrs)) {
                 nextAttrs += ' data-acm-surface="app-sidecar"';
@@ -326,6 +697,21 @@ export function injectSidecarHeadAndScripts(
             }
             return `<body${nextAttrs}>`;
         });
+    }
+
+    // Never serve a blank main body inside `#tab-overview` on cold boot or empty initial render.
+    if (out.includes('id="monitor-content"')) {
+        out = out.replace(
+            /(<div\b[^>]*\bid="tab-overview"[^>]*>)(\s*(?:<div class="eoc-sentinel">[\s\S]*?<\/div>\s*)?)(<\/div>)/i,
+            (_full, open: string, inner: string, close: string) => {
+                const initCard = `<section class="monitor-overview" data-monitor-overview data-monitor-state="connecting" data-acm-initializing="true">`
+                    + `<header class="overview-header"><h2 id="overview-heading">${tBiHtml('Context & quota', '上下文与配额')}</h2></header>`
+                    + `<div class="overview-connection"><h3 class="overview-section-heading"><span class="overview-state-dot" aria-hidden="true"></span><span>${tBiHtml('Connecting to Antigravity', '正在连接 Antigravity')}</span></h3>`
+                    + `<p class="overview-empty">${tBiHtml('Loading live context and quota telemetry…', '正在加载实时上下文与配额遥测…')}</p></div>`
+                    + `</section>`;
+                return `${open}\n${initCard}${inner}${close}`;
+            },
+        );
     }
 
     return out;
@@ -350,31 +736,37 @@ function readJsonBodyWithLimit(
         if (typeof contentLengthHeader === 'string') {
             const declared = Number(contentLengthHeader);
             if (Number.isFinite(declared) && declared > limitBytes) {
-                req.resume();
-                finish({ ok: false, status: 413, error: 'Request body exceeds 256KB limit' });
+                req.pause();
+                finish({ ok: false, status: 413, error: `Request body exceeds ${limitBytes} byte limit` });
                 return;
             }
         }
 
-        req.on('data', (chunk: Buffer | string) => {
+        const onData = (chunk: Buffer | string) => {
             if (settled) { return; }
             const buf = typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : chunk;
-            totalBytes += buf.length;
-            if (totalBytes > limitBytes) {
-                req.resume();
-                finish({ ok: false, status: 413, error: 'Request body exceeds 256KB limit' });
+            if (totalBytes + buf.length > limitBytes) {
+                chunks.length = 0;
+                req.off('data', onData);
+                req.pause();
+                finish({ ok: false, status: 413, error: `Request body exceeds ${limitBytes} byte limit` });
                 return;
             }
+            totalBytes += buf.length;
             chunks.push(buf);
-        });
+        };
+
+        req.on('data', onData);
 
         req.on('error', () => {
+            chunks.length = 0;
             finish({ ok: false, status: 400, error: 'Failed to read request body' });
         });
 
         req.on('end', () => {
             if (settled) { return; }
             const raw = Buffer.concat(chunks).toString('utf8').trim();
+            chunks.length = 0;
             if (!raw) {
                 finish({ ok: false, status: 400, error: 'Request body is required' });
                 return;
@@ -392,16 +784,147 @@ function sendJson(
     res: http.ServerResponse,
     status: number,
     payload: unknown,
-    extraHeaders: Record<string, string> = {},
+    extraHeaders: Record<string, string | string[]> = {},
 ): void {
     const body = JSON.stringify(payload);
-    res.writeHead(status, {
+    const headers: Record<string, string | string[]> = {
         'Content-Type': 'application/json; charset=utf-8',
         'Cache-Control': 'no-store',
         'X-Content-Type-Options': 'nosniff',
         ...extraHeaders,
-    });
+    };
+    if (status === 413) {
+        headers['Connection'] = 'close';
+    }
+    res.writeHead(status, headers);
     res.end(body);
+}
+
+interface StandaloneSessionRecord {
+    id: string;
+    tokenHash: Buffer;
+    createdAtMs: number;
+    scope: 'standalone';
+}
+
+function sanitizeActionRequest(
+    record: Record<string, unknown>,
+    command: string,
+    scope: SidecarAuthScope,
+): { ok: true; action: SidecarActionRequest } | { ok: false; status: number; error: string } {
+    const rawViewMode = typeof record.viewMode === 'string' ? record.viewMode : undefined;
+    const viewMode = (rawViewMode === 'aux' || rawViewMode === 'sidebar' || rawViewMode === 'standalone')
+        ? rawViewMode
+        : undefined;
+    const windowId = sanitizeOptionalId(record.windowId);
+    if (record.windowId !== undefined && !windowId) {
+        return { ok: false, status: 400, error: 'Invalid window identifier' };
+    }
+
+    if (command === 'syncHostFocus') {
+        const rawConv = record.conversationId;
+        let conversationId: string | null;
+        if (rawConv === null) {
+            conversationId = null;
+        } else if (typeof rawConv === 'string') {
+            const trimmed = rawConv.trim();
+            conversationId = trimmed ? trimmed : null;
+        } else {
+            return { ok: false, status: 400, error: 'syncHostFocus requires conversationId to be string or null' };
+        }
+
+        const focusRevision = record.focusRevision;
+        if (typeof focusRevision !== 'number' || !Number.isSafeInteger(focusRevision) || focusRevision < 0) {
+            return { ok: false, status: 400, error: 'syncHostFocus requires non-negative integer focusRevision' };
+        }
+
+        const action: SidecarActionRequest = {
+            command: 'syncHostFocus',
+            conversationId,
+            focusRevision,
+            ...(viewMode ? { viewMode } : {}),
+            ...(windowId ? { windowId } : {}),
+        };
+        if (scope === 'sdk') {
+            if (typeof record.fromSdkCallback === 'boolean') { action.fromSdkCallback = record.fromSdkCallback; }
+            if (typeof record.isFocusedPane === 'boolean') { action.isFocusedPane = record.isFocusedPane; }
+        }
+        if (record.backendEpoch !== undefined) {
+            if (typeof record.backendEpoch !== 'number' || !Number.isSafeInteger(record.backendEpoch) || record.backendEpoch < 0) {
+                return { ok: false, status: 400, error: 'Invalid backendEpoch' };
+            }
+            action.backendEpoch = record.backendEpoch;
+        }
+        const sourceInstanceId = sanitizeOptionalId(record.sourceInstanceId);
+        if (sourceInstanceId) { action.sourceInstanceId = sourceInstanceId; }
+        if (typeof record.conversationCleared === 'boolean') {
+            action.conversationCleared = record.conversationCleared;
+        }
+        if (typeof record.isNewConversation === 'boolean') {
+            action.isNewConversation = record.isNewConversation;
+        }
+        return { ok: true, action };
+    }
+
+    if (command === 'registerWorkspaces') {
+        if (!Array.isArray(record.workspaceUris)) {
+            return { ok: false, status: 400, error: 'registerWorkspaces requires workspaceUris array' };
+        }
+        if (record.workspaceUris.length > MAX_WORKSPACE_URIS) {
+            return { ok: false, status: 400, error: `workspaceUris exceeds max count (${MAX_WORKSPACE_URIS})` };
+        }
+        const cleaned: string[] = [];
+        for (const item of record.workspaceUris) {
+            if (typeof item !== 'string') {
+                return { ok: false, status: 400, error: 'workspaceUris entries must be strings' };
+            }
+            const trimmed = item.trim();
+            if (!trimmed) { continue; }
+            if (trimmed.length > MAX_WORKSPACE_URI_LENGTH || trimmed.includes('\0')) {
+                return { ok: false, status: 400, error: 'Invalid workspace URI entry' };
+            }
+            cleaned.push(trimmed);
+        }
+        // Explicit `workspaceUris: []` is preserved so the runtime revokes all old roots.
+        return {
+            ok: true,
+            action: {
+                command: 'registerWorkspaces',
+                workspaceUris: cleaned,
+                ...(windowId ? { windowId } : {}),
+            },
+        };
+    }
+
+    if (command === 'setPrivacyMask' || command === 'togglePrivacyMask') {
+        const rawMasked = record.masked ?? record.privacyMasked ?? record.value;
+        if (command === 'setPrivacyMask' && typeof rawMasked !== 'boolean') {
+            return { ok: false, status: 400, error: 'setPrivacyMask requires boolean masked' };
+        }
+        if (command === 'togglePrivacyMask' && rawMasked !== undefined && typeof rawMasked !== 'boolean') {
+            return { ok: false, status: 400, error: 'togglePrivacyMask masked must be boolean when provided' };
+        }
+        return {
+            ok: true,
+            action: {
+                command,
+                ...(typeof rawMasked === 'boolean' ? { masked: rawMasked, privacyMasked: rawMasked } : {}),
+                ...(viewMode ? { viewMode } : {}),
+                ...(windowId ? { windowId } : {}),
+            },
+        };
+    }
+
+    // Generic commands: strip unauthorized cross-command focus & workspace side-effect fields!
+    const sanitized: Record<string, unknown> = { ...record, command, ...(windowId ? { windowId } : {}) };
+    delete sanitized.workspaceUris;
+    delete sanitized.focusRevision;
+    delete sanitized.conversationCleared;
+    delete sanitized.isNewConversation;
+    if (!CONVERSATION_TARGETED_COMMANDS.has(command)) {
+        delete sanitized.conversationId;
+    }
+    return { ok: true, action: sanitized as SidecarActionRequest };
 }
 
 /**
@@ -414,13 +937,40 @@ export function createSidecarHandler(
     const startedAtMs = Date.now();
     const version = options.version || provider.version || DEFAULT_SIDECAR_VERSION;
     const isSidecarEnv = options.isSidecarEnv ?? Boolean(process.env.ANTIGRAVITY_SIDECAR_WEB_PORT);
+    const buildId = resolveRuntimeBuildId({ explicitBuildId: options.buildId, explicitVersion: version });
     const cachedThemeCss = getThemeAdapterStyles();
     const cachedBridgeJs = getHostBridgeScript(options.hostBridgeOptions);
-    const resolvedImagesDir = resolveDefaultImagesDir(options.imagesDir);
     const fallbackOverlayToken = options.overlayBridge?.token && options.overlayBridge.token.length >= 32
         ? options.overlayBridge.token
         : generateSessionToken();
     let explicitAllowedOrigin = options.overlayBridge?.allowedOrigin;
+    let boundPort = typeof options.boundPort === 'number' && options.boundPort > 0 ? options.boundPort : 0;
+
+    // Standalone one-time pairing & in-memory session store (fail-closed by default outside SDK).
+    const nowFn = options.standaloneAuth?.now ?? (() => Date.now());
+    const requirePairing = !isSidecarEnv && (options.standaloneAuth?.requirePairing ?? true);
+    const unpairedShellOnly = requirePairing && (options.standaloneAuth?.unpairedShellOnly ?? true);
+    const bootstrapPairing: StandaloneBootstrapPairing | undefined = requirePairing
+        ? (options.standaloneAuth?.bootstrapPairing
+            ? { ...options.standaloneAuth.bootstrapPairing }
+            : createDefaultBootstrapPairing(nowFn()))
+        : undefined;
+    const expectedPairingSha256 = bootstrapPairing
+        ? (bootstrapPairing.codeSha256 || sha256Hex(bootstrapPairing.code))
+        : '';
+    let pairingUsed = false;
+    let pairingFailedAttempts = 0;
+    const activeSessions = new Map<string, StandaloneSessionRecord>();
+
+    function setBoundPort(port: number): void {
+        if (Number.isSafeInteger(port) && port > 0 && port <= 65535) {
+            boundPort = port;
+        }
+    }
+
+    function getBootstrapPairing(): StandaloneBootstrapPairing | undefined {
+        return bootstrapPairing ? { ...bootstrapPairing } : undefined;
+    }
 
     function getOverlayBridgeToken(): string {
         if (options.overlayBridge?.token && options.overlayBridge.token.length >= 32) {
@@ -441,67 +991,106 @@ export function createSidecarHandler(
         explicitAllowedOrigin = origin;
     }
 
-    function listAssetImages(): string[] {
-        if (!resolvedImagesDir) { return []; }
-        try {
-            return fs.readdirSync(resolvedImagesDir)
-                .filter((name) => ALLOWED_IMAGE_FILENAME_RE.test(name))
-                .sort();
-        } catch {
-            return [];
+    function authorizeOverlayRequest(params: {
+        originHeader: string | undefined;
+        tokenHeader: string | undefined;
+        isPreflight: boolean;
+    }): { ok: true; status: 200; origin: string } | { ok: false; status: number; error: string } {
+        const hasExplicitTokenOverride = Boolean(options.overlayBridge?.token && options.overlayBridge.token.length >= 32);
+        if (!hasExplicitTokenOverride && typeof provider.validateOverlayBridgeAuth === 'function') {
+            // Validate Origin syntax & loopback first
+            const originCheck = validateOverlayBridgeRequest({
+                originHeader: params.originHeader,
+                tokenHeader: undefined,
+                expectedToken: fallbackOverlayToken,
+                allowedOrigin: explicitAllowedOrigin,
+                isPreflight: true,
+            });
+            if (!originCheck.ok || !originCheck.origin) {
+                return { ok: false, status: originCheck.status, error: originCheck.error || 'Forbidden Origin' };
+            }
+            if (params.isPreflight) {
+                return { ok: true, status: 200, origin: originCheck.origin };
+            }
+            const provided = typeof params.tokenHeader === 'string' ? params.tokenHeader.trim() : '';
+            if (!provided) {
+                return { ok: false, status: 401, error: 'Invalid or missing X-Monitor-Token' };
+            }
+            let valid = false;
+            try {
+                valid = Boolean(provider.validateOverlayBridgeAuth(provided, originCheck.origin));
+            } catch {
+                valid = false;
+            }
+            if (!valid) {
+                return { ok: false, status: 401, error: 'Invalid or revoked overlay bridge token or origin' };
+            }
+            return { ok: true, status: 200, origin: originCheck.origin };
         }
+
+        const check = validateOverlayBridgeRequest({
+            originHeader: params.originHeader,
+            tokenHeader: params.tokenHeader,
+            expectedToken: getOverlayBridgeToken(),
+            allowedOrigin: getOverlayAllowedOrigin(),
+            isPreflight: params.isPreflight,
+        });
+        if (!check.ok || !check.origin) {
+            return { ok: false, status: check.status, error: check.error || 'Unauthorized' };
+        }
+        return { ok: true, status: 200, origin: check.origin };
     }
 
-    async function handleAssetImage(filename: string): Promise<AssetImageResult> {
-        const notFound: AssetImageResult = {
-            status: 404,
-            contentType: 'application/json; charset=utf-8',
-            body: JSON.stringify({ ok: false, error: 'Not Found' }),
-            headers: {
-                'Cache-Control': 'no-store',
-                'X-Content-Type-Options': 'nosniff',
-            },
-        };
-        if (!resolvedImagesDir || typeof filename !== 'string' || !ALLOWED_IMAGE_FILENAME_RE.test(filename)) {
-            return notFound;
+    function authenticateStandaloneHttp(req: http.IncomingMessage): {
+        authenticated: boolean;
+        sessionId: string;
+        authMethod: 'none' | 'bearer' | 'header';
+    } {
+        if (!requirePairing) {
+            return { authenticated: true, sessionId: isSidecarEnv ? 'sdk' : 'standalone-open', authMethod: 'none' };
         }
-        try {
-            const realBase = await fs.promises.realpath(resolvedImagesDir);
-            const candidate = path.join(realBase, filename);
-            const realTarget = await fs.promises.realpath(candidate);
-            const rel = path.relative(realBase, realTarget);
-            if (!rel || rel.startsWith('..') || path.isAbsolute(rel) || rel !== filename) {
-                return notFound;
-            }
-            const stat = await fs.promises.stat(realTarget);
-            if (!stat.isFile()) {
-                return notFound;
-            }
-            const buf = await fs.promises.readFile(realTarget);
-            return {
-                status: 200,
-                contentType: 'image/png',
-                body: buf,
-                headers: {
-                    'Cache-Control': 'public, max-age=3600',
-                    'X-Content-Type-Options': 'nosniff',
-                    'Content-Length': String(buf.length),
-                },
-            };
-        } catch {
-            return notFound;
+        const candidates: Array<{ token: string; method: 'bearer' | 'header' }> = [];
+
+        const authHeader = typeof req.headers.authorization === 'string' ? req.headers.authorization.trim() : '';
+        if (/^Bearer\s+\S+$/i.test(authHeader)) {
+            const token = authHeader.replace(/^Bearer\s+/i, '').trim();
+            if (token) { candidates.push({ token, method: 'bearer' }); }
         }
+        const sessionHdr = typeof req.headers['x-monitor-session'] === 'string'
+            ? req.headers['x-monitor-session'].trim()
+            : '';
+        if (sessionHdr) {
+            candidates.push({ token: sessionHdr, method: 'header' });
+        }
+        for (const cand of candidates) {
+            const candHash = sha256Buf(cand.token);
+            for (const rec of activeSessions.values()) {
+                if (rec.tokenHash.length === candHash.length && crypto.timingSafeEqual(rec.tokenHash, candHash)) {
+                    return { authenticated: true, sessionId: rec.id, authMethod: cand.method };
+                }
+            }
+        }
+        return { authenticated: false, sessionId: '', authMethod: 'none' };
     }
 
-    async function renderPage(viewMode: SidecarViewMode, rawUrl = '/'): Promise<RenderedPageResult> {
+    async function renderPage(
+        viewMode: SidecarViewMode,
+        rawUrl = '/',
+        windowId?: string,
+        authScope?: SidecarAuthScope,
+        privacyMasked?: boolean,
+    ): Promise<RenderedPageResult> {
         const parsedUrl = new URL(rawUrl, 'http://127.0.0.1');
         const rawLang = parsedUrl.searchParams.get('lang') || undefined;
         const lang = (rawLang === 'en' || rawLang === 'zh' || rawLang === 'both') ? rawLang : undefined;
+        const effectiveMasked = typeof privacyMasked === 'boolean' ? privacyMasked : (!windowId ? true : undefined);
+        // GET / and /full are strictly read-only projections: NEVER forward conversationId or workspaceUris from URL.
         const ctx: SidecarRenderContext = {
             viewMode,
             pathname: parsedUrl.pathname,
-            conversationId: parsedUrl.searchParams.get('conversationId') || undefined,
-            workspaceUris: parseWorkspaceUrisParam(parsedUrl.searchParams.get('workspaceUris') || undefined),
+            ...(windowId ? { windowId } : {}),
+            ...(authScope ? { authScope } : {}),
+            ...(typeof effectiveMasked === 'boolean' ? { privacyMasked: effectiveMasked } : {}),
             ...(lang ? { lang } : {}),
             isSidecarEnv,
             version,
@@ -527,66 +1116,81 @@ export function createSidecarHandler(
     async function handleSnapshotQuery(
         query: Record<string, string | string[] | undefined>,
         ifNoneMatch?: string,
+        requestCtx: SidecarRequestContext = {},
     ): Promise<{ status: number; headers: Record<string, string>; body: SidecarSnapshotHttpBody }> {
-        const clientEtag = normalizeEtag(firstString(query.etag) || ifNoneMatch);
+        const transport = requestCtx.transport ?? (isSidecarEnv ? 'sdk' : 'http');
+        const authScope: SidecarAuthScope = requestCtx.authScope ?? (isSidecarEnv ? 'sdk' : 'standalone');
+        const authSubject = requestCtx.authSubject ?? (authScope === 'sdk' ? 'sdk' : 'standalone');
+
+        const queryEtag = firstString(query.etag);
+        const clientEtag = normalizeEtag(queryEtag || ifNoneMatch);
         const rawView = firstString(query.viewMode) || firstString(query.view);
         const viewMode = parseViewMode(rawView, isSidecarEnv ? 'aux' : 'standalone');
         const rawLang = firstString(query.lang);
         const lang = (rawLang === 'en' || rawLang === 'zh' || rawLang === 'both') ? rawLang : undefined;
         const includeHtml = firstString(query.includeHtml) === 'true' || firstString(query.includeHtml) === '1';
-
-        const rawLockMain = firstString(query.lockToMainAgent);
-        const lockToMainAgent = rawLockMain !== undefined ? rawLockMain === 'true' : undefined;
         const rawActive = firstString(query.active);
         const userActive = rawActive === '1' || rawActive === 'true';
-        const rawConvCleared = firstString(query.conversationCleared);
-        const conversationCleared = rawConvCleared === '1' || rawConvCleared === 'true';
-        const rawIsNewConv = firstString(query.isNewConversation);
-        const isNewConversation = rawIsNewConv === '1' || rawIsNewConv === 'true';
+        const windowId = sanitizeOptionalId(firstString(query.windowId));
 
+        // Strictly read-only GET /api/snapshot contract:
+        // NEVER extract or forward conversationId, workspaceUris, pinnedConversationId,
+        // lockToMainAgent, conversationCleared, or isNewConversation on GET!
         const snapshotQuery: SidecarSnapshotQuery & {
             lang?: 'en' | 'zh' | 'both';
             includeHtml?: boolean;
-            conversationCleared?: boolean;
-            isNewConversation?: boolean;
+            windowId?: string;
+            authScope?: SidecarAuthScope;
         } = {
-            conversationId: firstString(query.conversationId) || undefined,
-            workspaceUris: parseWorkspaceUrisParam(firstString(query.workspaceUris)),
-            etag: clientEtag || undefined,
+            ...(clientEtag ? { etag: clientEtag } : {}),
             viewMode,
-            pinnedConversationId: firstString(query.pinnedConversationId) || undefined,
-            ...(lockToMainAgent !== undefined ? { lockToMainAgent } : {}),
-            ...(userActive ? { userActive: true } : {}),
-            ...(conversationCleared ? { conversationCleared: true } : {}),
-            ...(isNewConversation ? { isNewConversation: true } : {}),
             ...(lang ? { lang } : {}),
             ...(includeHtml ? { includeHtml: true } : {}),
+            ...(windowId ? { windowId } : {}),
+            ...(userActive ? { userActive: true } : {}),
+            authScope,
         };
-        const snapshot = await provider.getSnapshot(snapshotQuery);
-        const hash = computeSnapshotHash(snapshot);
+
+        const providerSnapshot = await provider.getSnapshot(snapshotQuery);
+        const { html: snapshotHtml, ...snapshot } = providerSnapshot;
+        const effectiveLanguage = lang || (typeof snapshot.language === 'string' ? snapshot.language : '');
+        const hash = computeSnapshotValidatorEtag(includeHtml ? providerSnapshot : snapshot, {
+            authScope,
+            authSubject,
+            viewMode,
+            effectiveLanguage,
+            includeHtml,
+        });
         const headers: Record<string, string> = {
             'ETag': `"${hash}"`,
             'Cache-Control': 'no-store',
+            'Vary': 'Origin, X-Monitor-Session, Authorization',
         };
-        if (clientEtag && clientEtag === hash) {
+
+        if (matchesClientEtag(ifNoneMatch, queryEtag, hash)) {
+            if (transport === 'http') {
+                return {
+                    status: 304,
+                    headers,
+                    body: null,
+                };
+            }
             return {
                 status: 200,
                 headers,
                 body: { unchanged: true, hash },
             };
         }
-        const snapRecord = snapshot as Record<string, unknown>;
-        let html: string | undefined = typeof snapRecord.html === 'string' ? snapRecord.html : undefined;
-        if (includeHtml && !html) {
+
+        let html = includeHtml && typeof snapshotHtml === 'string'
+            ? injectSidecarHeadAndScripts(snapshotHtml, { isSidecarEnv, viewMode, themeAdapterCss: cachedThemeCss, hostBridgeScript: cachedBridgeJs })
+            : undefined;
+        if (includeHtml && html === undefined) {
             const qs = new URLSearchParams();
-            if (snapshotQuery.conversationId) { qs.set('conversationId', snapshotQuery.conversationId); }
-            if (snapshotQuery.workspaceUris && snapshotQuery.workspaceUris.length > 0) {
-                qs.set('workspaceUris', JSON.stringify(snapshotQuery.workspaceUris));
-            }
             if (lang) { qs.set('lang', lang); }
             const pagePath = viewMode === 'sidebar' ? '/full' : '/';
             const pageUrl = qs.toString() ? `${pagePath}?${qs.toString()}` : pagePath;
-            const rendered = await renderPage(viewMode, pageUrl);
+            const rendered = await renderPage(viewMode, pageUrl, windowId, authScope);
             html = rendered.body;
         }
         return {
@@ -596,13 +1200,15 @@ export function createSidecarHandler(
                 unchanged: false,
                 hash,
                 snapshot,
-                data: snapRecord.data !== undefined ? snapRecord.data : snapshot,
                 ...(html !== undefined ? { html } : {}),
             },
         };
     }
 
-    async function handleActionPayload(rawBody: unknown): Promise<{ status: number; body: SidecarActionHttpBody }> {
+    async function handleActionPayload(
+        rawBody: unknown,
+        requestCtx: SidecarRequestContext = {},
+    ): Promise<{ status: number; body: SidecarActionHttpBody }> {
         if (!rawBody || typeof rawBody !== 'object' || Array.isArray(rawBody)) {
             return { status: 400, body: { ok: false, error: 'Action payload must be a JSON object' } };
         }
@@ -611,9 +1217,41 @@ export function createSidecarHandler(
         if (!command || command.length > 128) {
             return { status: 400, body: { ok: false, error: 'Missing or invalid action command' } };
         }
-        const action: SidecarActionRequest = { ...record, command };
+
+        const authScope: SidecarAuthScope = requestCtx.authScope ?? (isSidecarEnv ? 'sdk' : 'standalone');
+        const authSubject = requestCtx.authSubject ?? (authScope === 'sdk' ? 'sdk' : 'standalone');
+
+        if (!isCommandAllowedForScope(authScope, command)) {
+            return {
+                status: 403,
+                body: { ok: false, error: `Command "${command}" is not permitted for ${authScope} capability scope` },
+            };
+        }
+
+        const validated = sanitizeActionRequest(record, command, authScope);
+        if (!validated.ok) {
+            return { status: validated.status, body: { ok: false, error: validated.error } };
+        }
+
+        const viewMode = parseViewMode(
+            typeof validated.action.viewMode === 'string' ? validated.action.viewMode : undefined,
+            isSidecarEnv ? 'aux' : 'standalone',
+        );
+
         try {
-            const response = await provider.handleAction(action) as SidecarActionHttpBody | undefined;
+            const response = await provider.handleAction(validated.action) as SidecarActionHttpBody | undefined;
+            // Always derive the subject/view/language/privacy-bound validator ETag so POST and GET
+            // produce identical ETag validators (never let an unwrapped provider hash break binding).
+            const computedHash = response?.snapshot !== undefined
+                ? computeSnapshotValidatorEtag(response.snapshot, {
+                    authScope,
+                    authSubject,
+                    viewMode,
+                    effectiveLanguage: typeof response.snapshot.language === 'string' ? response.snapshot.language : '',
+                    includeHtml: false,
+                })
+                : undefined;
+
             const sanitized: SidecarActionHttpBody = {
                 ok: Boolean(response?.ok),
                 ...(typeof response?.type === 'string' ? { type: response.type } : {}),
@@ -628,7 +1266,7 @@ export function createSidecarHandler(
                 ...(response?.snapshot !== undefined
                     ? {
                         snapshot: response.snapshot,
-                        hash: response.hash || computeSnapshotHash(response.snapshot),
+                        hash: computedHash,
                     }
                     : {}),
                 ...(typeof response?.error === 'string' && response.error
@@ -663,15 +1301,11 @@ export function createSidecarHandler(
         rawBody?: unknown;
     }): Promise<SidecarOverlayActionResult> {
         const method = (params.method || 'GET').toUpperCase();
-        const expectedToken = getOverlayBridgeToken();
-        const allowedOrigin = getOverlayAllowedOrigin();
 
         if (method === 'OPTIONS') {
-            const check = validateOverlayBridgeRequest({
+            const check = authorizeOverlayRequest({
                 originHeader: params.originHeader,
                 tokenHeader: params.tokenHeader,
-                expectedToken,
-                allowedOrigin,
                 isPreflight: true,
             });
             if (!check.ok) {
@@ -690,11 +1324,9 @@ export function createSidecarHandler(
             return { status: 405, headers: {}, body: { ok: false, error: 'Method Not Allowed' } };
         }
 
-        const check = validateOverlayBridgeRequest({
+        const check = authorizeOverlayRequest({
             originHeader: params.originHeader,
             tokenHeader: params.tokenHeader,
-            expectedToken,
-            allowedOrigin,
             isPreflight: false,
         });
         if (!check.ok) {
@@ -706,47 +1338,53 @@ export function createSidecarHandler(
             return { status: 400, headers: corsHeaders, body: { ok: false, error: 'Invalid overlay action payload' } };
         }
         const rec = params.rawBody as Record<string, unknown>;
-        const rawCmd = typeof rec.command === 'string' ? rec.command.trim() as SidecarOverlayBridgeCommand : '' as SidecarOverlayBridgeCommand;
-        if (!ALLOWED_OVERLAY_BRIDGE_COMMANDS.has(rawCmd)) {
-            return { status: 400, headers: corsHeaders, body: { ok: false, error: 'Unsupported overlay action' } };
+        const rawCmdStr = typeof rec.command === 'string' ? rec.command.trim() : '';
+        if (!rawCmdStr || rawCmdStr.length > 128) {
+            return { status: 400, headers: corsHeaders, body: { ok: false, error: 'Missing or invalid overlay command' } };
         }
+        if (!isCommandAllowedForScope('cdp', rawCmdStr)) {
+            return {
+                status: 403,
+                headers: corsHeaders,
+                body: { ok: false, error: 'Command not permitted for cdp capability scope' },
+            };
+        }
+        const rawCmd = rawCmdStr as CdpAllowedOverlayCommand;
+        const token = params.tokenHeader?.trim() || '';
+        const usesProviderGrant = !options.overlayBridge?.token && Boolean(provider.validateOverlayBridgeAuth);
+        if (usesProviderGrant && !provider.validateOverlayBridgeAuth?.(token, check.origin, rawCmd)) {
+            return { status: 403, headers: corsHeaders, body: { ok: false, error: 'Command not permitted by overlay grant' } };
+        }
+        const targetId = usesProviderGrant ? provider.resolveOverlayTargetId?.(token, check.origin, rawCmd) : undefined;
         const source = rec.source === 'composer' || rec.source === 'topbar' ? rec.source : undefined;
         const rawTargetTab = typeof rec.targetTab === 'string' ? rec.targetTab.trim() as CdpOverlayTargetTab : undefined;
         const targetTab = rawTargetTab && ALLOWED_OVERLAY_TARGET_TABS.has(rawTargetTab) ? rawTargetTab : undefined;
-        const rawConvId = typeof rec.conversationId === 'string'
-            ? rec.conversationId.trim()
-            : (rec.conversationId === null ? null : undefined);
-        const isNewConversation = rec.isNewConversation === true;
+        const rawConvId = rawCmd === 'focusConversation' ? parseOverlayConversationId(rec.conversationId) : undefined;
+        const isNewConversation = rawCmd === 'focusConversation' && rec.isNewConversation === true;
+        const focusRevision = rawCmd === 'focusConversation' && typeof rec.focusRevision === 'number'
+            && Number.isSafeInteger(rec.focusRevision) && rec.focusRevision >= 0 ? rec.focusRevision : undefined;
+        if (rawCmd === 'focusConversation' && (
+            (rawConvId === undefined && (rec.conversationId !== undefined || !isNewConversation))
+            || (rec.focusRevision !== undefined && focusRevision === undefined)
+        )) {
+            return { status: 400, headers: corsHeaders, body: { ok: false, error: 'Invalid conversation focus payload' } };
+        }
+
         const overlayReq: SidecarOverlayBridgeRequest = {
             command: rawCmd,
             source,
             ...(targetTab ? { targetTab } : {}),
             ...(rawConvId !== undefined ? { conversationId: rawConvId } : {}),
             ...(isNewConversation ? { isNewConversation: true } : {}),
+            ...(focusRevision !== undefined ? { focusRevision } : {}),
+            ...(targetId ? { targetId } : {}),
         };
 
-        if (rawCmd === 'ping') {
-            return {
-                status: 200,
-                headers: corsHeaders,
-                body: { ok: true, command: 'ping', result: { pong: true, version } },
-            };
-        }
-
         try {
-            if (options.overlayBridge?.onAction) {
-                const res = await options.overlayBridge.onAction(overlayReq);
-                if (res && typeof res === 'object') {
-                    return {
-                        status: res.ok === false ? (res.statusCode || 400) : 200,
-                        headers: corsHeaders,
-                        body: { ok: res.ok !== false, command: rawCmd, ...(res.result !== undefined ? { result: res.result } : {}), ...(res.error ? { error: res.error } : {}) },
-                    };
-                }
-                return { status: 200, headers: corsHeaders, body: { ok: true, command: rawCmd } };
-            }
-            if (typeof provider.handleOverlayAction === 'function') {
-                const res = await provider.handleOverlayAction(overlayReq);
+            const customHandler = options.overlayBridge?.onAction
+                ?? (typeof provider.handleOverlayAction === 'function' ? (r: SidecarOverlayBridgeRequest) => provider.handleOverlayAction!(r) : null);
+            if (customHandler) {
+                const res = await customHandler(overlayReq);
                 if (res && typeof res === 'object') {
                     return {
                         status: res.ok === false ? (res.statusCode || 400) : 200,
@@ -764,81 +1402,206 @@ export function createSidecarHandler(
                     body: { ok: actionRes?.ok !== false, command: rawCmd, ...(actionRes?.result !== undefined ? { result: actionRes.result } : {}) },
                 };
             }
-            // openSidecar / togglePanel / openPanel acknowledged cleanly on loopback bridge
-            return {
-                status: 200,
-                headers: corsHeaders,
-                body: { ok: true, command: rawCmd, result: { acknowledged: true, command: rawCmd } },
-            };
+            return { status: 200, headers: corsHeaders, body: { ok: true, command: rawCmd, result: { acknowledged: true, command: rawCmd } } };
         } catch {
             return { status: 500, headers: corsHeaders, body: { ok: false, error: 'Overlay action failed' } };
         }
     }
 
-    function getHealth(): SidecarHealthResponse {
+    function getHealth(): SidecarHealthResponse & { pairingRequired?: boolean } {
         return {
             ok: true,
             version,
             surface: 'app-sidecar',
+            buildId,
             pid: process.pid,
             mode: isSidecarEnv ? 'sidecar' : 'standalone',
             uptimeMs: Math.max(0, Date.now() - startedAtMs),
+            ...(requirePairing ? { pairingRequired: true } : {}),
         };
+    }
+
+    async function handleStandalonePairHttp(
+        req: http.IncomingMessage,
+        res: http.ServerResponse,
+        expectedOrigin: string,
+    ): Promise<void> {
+        if (!requirePairing || !bootstrapPairing) {
+            sendJson(res, 404, { ok: false, error: 'Pairing endpoint not enabled' });
+            return;
+        }
+        const originCheck = validateSameOriginHeader({
+            originHeader: req.headers.origin,
+            refererHeader: req.headers.referer,
+            secFetchSiteHeader: req.headers['sec-fetch-site'],
+            secFetchModeHeader: req.headers['sec-fetch-mode'],
+            secFetchDestHeader: req.headers['sec-fetch-dest'],
+            expectedOrigin,
+            isWrite: true,
+            usesBrowserSessionHeader: false,
+        });
+        if (!originCheck.ok) {
+            sendJson(res, originCheck.status, { ok: false, error: originCheck.error });
+            return;
+        }
+        if (!isJsonContentType(req.headers['content-type'])) {
+            sendJson(res, 415, { ok: false, error: 'Content-Type must be application/json' });
+            return;
+        }
+
+        const parsed = await readJsonBodyWithLimit(req, MAX_PAIR_BODY_BYTES);
+        if (!parsed.ok) {
+            sendJson(res, parsed.status, { ok: false, error: parsed.error });
+            return;
+        }
+        if (!parsed.data || typeof parsed.data !== 'object' || Array.isArray(parsed.data)) {
+            sendJson(res, 400, { ok: false, error: 'Pairing payload must be a JSON object' });
+            return;
+        }
+        const rec = parsed.data as Record<string, unknown>;
+        const rawCode = typeof rec.pairingCode === 'string'
+            ? rec.pairingCode
+            : (typeof rec.pairingToken === 'string'
+                ? rec.pairingToken
+                : (typeof rec.code === 'string' ? rec.code : ''));
+        const candidateCode = rawCode.trim();
+        if (!candidateCode) {
+            sendJson(res, 400, { ok: false, error: 'Missing pairing code' });
+            return;
+        }
+
+        const nowMs = nowFn();
+        const isExpired = nowMs > bootstrapPairing.expiresAtMs;
+        const matches = !pairingUsed
+            && !isExpired
+            && expectedPairingSha256.length > 0
+            && constantTimeHexEquals(sha256Hex(candidateCode), expectedPairingSha256);
+
+        if (!matches) {
+            if (!pairingUsed && !isExpired) {
+                pairingFailedAttempts += 1;
+                if (pairingFailedAttempts >= MAX_PAIRING_FAILURES) {
+                    pairingUsed = true;
+                    bootstrapPairing.code = '';
+                    try { options.standaloneAuth?.onPairingConsumed?.(); } catch { /* ignore */ }
+                }
+            }
+            sendJson(res, 401, { ok: false, error: 'Invalid, expired, or already used pairing code' });
+            return;
+        }
+
+        // Immediately burn the single-use pairing code before minting session credentials.
+        pairingUsed = true;
+        bootstrapPairing.code = '';
+        try { options.standaloneAuth?.onPairingConsumed?.(); } catch { /* ignore */ }
+
+        const sessionToken = crypto.randomBytes(32).toString('hex');
+        const sessionId = `sess-${crypto.randomBytes(8).toString('hex')}`;
+        if (activeSessions.size >= MAX_STANDALONE_SESSIONS) {
+            const oldestKey = activeSessions.keys().next().value;
+            if (oldestKey !== undefined) {
+                activeSessions.delete(oldestKey);
+            }
+        }
+        activeSessions.set(sessionId, {
+            id: sessionId,
+            tokenHash: sha256Buf(sessionToken),
+            createdAtMs: nowMs,
+            scope: 'standalone',
+        });
+
+        sendJson(res, 200, {
+            ok: true,
+            paired: true,
+            sessionId,
+            sessionToken,
+        }, {
+            'Pragma': 'no-cache',
+        });
     }
 
     async function handleHttp(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
         const method = (req.method || 'GET').toUpperCase();
-        const rawUrlPath = (req.url || '/').split('?')[0];
+
+        // 1. Validate bound loopback Host BEFORE route dispatch or reading any body (DNS-rebinding defense)
+        const effectiveExpectedPort = boundPort > 0
+            ? boundPort
+            : (typeof req.socket?.localPort === 'number' && req.socket.localPort > 0 ? req.socket.localPort : undefined);
+        const hostCheck = validateLoopbackHostHeader(req.headers.host, effectiveExpectedPort);
+        if (!hostCheck.ok) {
+            sendJson(res, hostCheck.status, { ok: false, error: hostCheck.error });
+            return;
+        }
+
         let parsedUrl: URL;
         try {
-            parsedUrl = new URL(req.url || '/', 'http://127.0.0.1');
+            parsedUrl = new URL(req.url || '/', hostCheck.origin);
         } catch {
             sendJson(res, 400, { ok: false, error: 'Invalid request URL' });
             return;
         }
         const pathname = parsedUrl.pathname;
 
+        const checkOrigin = (opts: { isWrite: boolean; usesBrowserSessionHeader?: boolean; isHtmlNavigation?: boolean }) => {
+            const c = validateSameOriginHeader({
+                originHeader: req.headers.origin,
+                refererHeader: req.headers.referer,
+                secFetchSiteHeader: req.headers['sec-fetch-site'],
+                secFetchModeHeader: req.headers['sec-fetch-mode'],
+                secFetchDestHeader: req.headers['sec-fetch-dest'],
+                expectedOrigin: hostCheck.origin,
+                isWrite: opts.isWrite,
+                usesBrowserSessionHeader: Boolean(opts.usesBrowserSessionHeader),
+                isHtmlNavigation: opts.isHtmlNavigation,
+            });
+            if (!c.ok) { sendJson(res, c.status, { ok: false, error: c.error }); return false; }
+            return true;
+        };
+
         try {
-            if (pathname === '/' || pathname === '/full') {
-                if (method !== 'GET') {
-                    sendJson(res, 405, { ok: false, error: 'Method Not Allowed' });
-                    return;
-                }
-                const viewMode: SidecarViewMode = pathname === '/full'
-                    ? 'sidebar'
-                    : (isSidecarEnv ? 'aux' : 'standalone');
-                const rendered = await renderPage(viewMode, req.url || pathname);
-                res.writeHead(rendered.status, {
-                    'Content-Type': rendered.contentType,
-                    ...rendered.headers,
-                });
-                res.end(rendered.body);
+            if (pathname === '/api/auth/pair' || pathname === '/api/pair') {
+                if (method !== 'POST') { sendJson(res, 405, { ok: false, error: 'Method Not Allowed' }); return; }
+                await handleStandalonePairHttp(req, res, hostCheck.origin);
                 return;
             }
 
-            if (rawUrlPath.startsWith('/assets/images/') || pathname.startsWith('/assets/images/')) {
-                if (method !== 'GET' && method !== 'HEAD') {
-                    sendJson(res, 405, { ok: false, error: 'Method Not Allowed' });
+            if (pathname === '/' || pathname === '/full') {
+                if (method !== 'GET' && method !== 'HEAD') { sendJson(res, 405, { ok: false, error: 'Method Not Allowed' }); return; }
+                if (!checkOrigin({ isWrite: false, isHtmlNavigation: true })) { return; }
+                const viewMode: SidecarViewMode = pathname === '/full' ? 'sidebar' : (isSidecarEnv ? 'aux' : 'standalone');
+                const auth = authenticateStandaloneHttp(req);
+                if (requirePairing && !auth.authenticated) {
+                    if (req.headers['x-monitor-session'] || req.headers.authorization) { sendJson(res, 401, { ok: false, error: 'Session expired' }); return; }
+                    if (unpairedShellOnly) {
+                        const requestedLang = parsedUrl.searchParams.get('lang');
+                        const lang = isLanguage(requestedLang) ? requestedLang : (/^zh(?:-|,|;|$)/i.test(req.headers['accept-language'] || '') ? 'zh' : 'en');
+                        const shell = renderStandalonePairingShellHtml(viewMode, bootstrapPairing?.exchangeEndpoint || '/api/auth/pair', version, lang);
+                        res.writeHead(200, {
+                            'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store',
+                            'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY',
+                            'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'",
+                        });
+                        res.end(method === 'HEAD' ? undefined : shell);
+                        return;
+                    }
+                    sendJson(res, 401, { ok: false, error: 'Authentication required' });
                     return;
                 }
-                const rawMatch = IMAGE_ROUTE_RE.exec(rawUrlPath);
-                const parsedMatch = IMAGE_ROUTE_RE.exec(pathname);
-                if (!rawMatch || !parsedMatch || rawMatch[1] !== parsedMatch[1]) {
-                    sendJson(res, 404, { ok: false, error: 'Not Found' });
-                    return;
-                }
-                const asset = await handleAssetImage(rawMatch[1]);
-                res.writeHead(asset.status, {
-                    'Content-Type': asset.contentType,
-                    ...asset.headers,
+                const rendered = await renderPage(viewMode, req.url || pathname);
+                res.writeHead(rendered.status, {
+                    'Content-Type': rendered.contentType, ...rendered.headers,
+                    ...(isSidecarEnv ? {} : { 'X-Frame-Options': 'SAMEORIGIN' }),
                 });
-                res.end(method === 'HEAD' ? undefined : asset.body);
+                res.end(method === 'HEAD' ? undefined : rendered.body);
                 return;
             }
 
             if (pathname === '/api/health') {
-                if (method !== 'GET') {
-                    sendJson(res, 405, { ok: false, error: 'Method Not Allowed' });
+                if (method !== 'GET' && method !== 'HEAD') { sendJson(res, 405, { ok: false, error: 'Method Not Allowed' }); return; }
+                if (!checkOrigin({ isWrite: false })) { return; }
+                if (method === 'HEAD') {
+                    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
+                    res.end();
                     return;
                 }
                 sendJson(res, 200, getHealth());
@@ -846,31 +1609,32 @@ export function createSidecarHandler(
             }
 
             if (pathname === '/api/snapshot') {
-                if (method !== 'GET') {
-                    sendJson(res, 405, { ok: false, error: 'Method Not Allowed' });
-                    return;
-                }
+                if (method !== 'GET') { sendJson(res, 405, { ok: false, error: 'Method Not Allowed' }); return; }
+                if (!checkOrigin({ isWrite: false })) { return; }
+                const auth = authenticateStandaloneHttp(req);
+                if (!auth.authenticated) { sendJson(res, 401, { ok: false, error: 'Authentication required' }); return; }
                 const query: Record<string, string> = {};
                 parsedUrl.searchParams.forEach((v, k) => { query[k] = v; });
-                const ifNoneMatch = typeof req.headers['if-none-match'] === 'string'
-                    ? req.headers['if-none-match']
-                    : undefined;
-                const result = await handleSnapshotQuery(query, ifNoneMatch);
+                const ifNoneMatch = typeof req.headers['if-none-match'] === 'string' ? req.headers['if-none-match'] : undefined;
+                const result = await handleSnapshotQuery(query, ifNoneMatch, { transport: 'http', authScope: isSidecarEnv ? 'sdk' : 'standalone', authSubject: auth.sessionId });
+                if (result.status === 304) {
+                    res.writeHead(304, { 'X-Content-Type-Options': 'nosniff', ...result.headers });
+                    res.end();
+                    return;
+                }
                 sendJson(res, result.status, result.body, result.headers);
                 return;
             }
 
             if (pathname === '/api/action') {
-                if (method !== 'POST') {
-                    sendJson(res, 405, { ok: false, error: 'Method Not Allowed' });
-                    return;
-                }
+                if (method !== 'POST') { sendJson(res, 405, { ok: false, error: 'Method Not Allowed' }); return; }
+                const auth = authenticateStandaloneHttp(req);
+                if (!checkOrigin({ isWrite: true, usesBrowserSessionHeader: auth.authMethod === 'header' })) { return; }
+                if (!auth.authenticated) { sendJson(res, 401, { ok: false, error: 'Authentication required' }); return; }
+                if (!isJsonContentType(req.headers['content-type'])) { sendJson(res, 415, { ok: false, error: 'Content-Type must be application/json' }); return; }
                 const parsed = await readJsonBodyWithLimit(req, MAX_ACTION_BODY_BYTES);
-                if (!parsed.ok) {
-                    sendJson(res, parsed.status, { ok: false, error: parsed.error });
-                    return;
-                }
-                const result = await handleActionPayload(parsed.data);
+                if (!parsed.ok) { sendJson(res, parsed.status, { ok: false, error: parsed.error }); return; }
+                const result = await handleActionPayload(parsed.data, { transport: 'http', authScope: isSidecarEnv ? 'sdk' : 'standalone', authSubject: auth.sessionId });
                 sendJson(res, result.status, result.body);
                 return;
             }
@@ -894,16 +1658,23 @@ export function createSidecarHandler(
                     sendJson(res, 405, { ok: false, error: 'Method Not Allowed' });
                     return;
                 }
-                // Validate Origin + X-Monitor-Token BEFORE reading body so unauthenticated callers cannot buffer memory
-                const authCheck = validateOverlayBridgeRequest({
+                // Validate Origin + X-Monitor-Token + Content-Type BEFORE reading body!
+                const authCheck = authorizeOverlayRequest({
                     originHeader,
                     tokenHeader,
-                    expectedToken: getOverlayBridgeToken(),
-                    allowedOrigin: getOverlayAllowedOrigin(),
                     isPreflight: false,
                 });
                 if (!authCheck.ok) {
                     sendJson(res, authCheck.status, { ok: false, error: authCheck.error });
+                    return;
+                }
+                if (!isJsonContentType(req.headers['content-type'])) {
+                    sendJson(
+                        res,
+                        415,
+                        { ok: false, error: 'Content-Type must be application/json' },
+                        buildOverlayCorsHeaders(authCheck.origin),
+                    );
                     return;
                 }
                 const parsed = await readJsonBodyWithLimit(req, MAX_OVERLAY_ACTION_BODY_BYTES);
@@ -934,8 +1705,8 @@ export function createSidecarHandler(
         handleOverlayAction,
         getOverlayBridgeToken,
         setOverlayAllowedOrigin,
-        handleAssetImage,
-        listAssetImages,
+        setBoundPort,
+        getBootstrapPairing,
         getHealth,
         handleHttp,
     };
@@ -944,22 +1715,24 @@ export function createSidecarHandler(
 /**
  * Starts a loopback-only HTTP server (`127.0.0.1`) for standalone testing,
  * headless Chromium verification, or local development outside Antigravity App.
+ * Enforces one-time bootstrap pairing by default (`standaloneAuth.requirePairing = true`).
  */
 export async function startStandaloneServer(
     provider: SidecarOverlayAwareProvider,
     options: StandaloneServerOptions = {},
 ): Promise<StandaloneServerHandle> {
     const host = options.host || '127.0.0.1';
-    if (!LOOPBACK_HOSTS.has(host)) {
+    if (!LOOPBACK_BIND_HOSTS.has(host)) {
         throw new Error(`Refusing to bind sidecar standalone server to non-loopback host: ${host}`);
     }
     const port = typeof options.port === 'number' ? options.port : 0;
     const handler = createSidecarHandler(provider, {
         version: options.version,
+        buildId: options.buildId,
         isSidecarEnv: false,
         hostBridgeOptions: options.hostBridgeOptions,
-        imagesDir: options.imagesDir,
         overlayBridge: options.overlayBridge,
+        standaloneAuth: options.standaloneAuth,
     });
 
     const server = http.createServer((req, res) => {
@@ -982,6 +1755,7 @@ export async function startStandaloneServer(
 
     const addr = server.address();
     const resolvedPort = typeof addr === 'object' && addr ? addr.port : port;
+    handler.setBoundPort(resolvedPort);
     (provider as { setListeningPort?: (p: number) => void }).setListeningPort?.(resolvedPort);
     const urlHost = host === '::1' ? '[::1]' : host;
 
@@ -1010,12 +1784,18 @@ export async function startStandaloneServer(
         return closePromise;
     };
 
+    const bootstrapPairing = handler.getBootstrapPairing();
+
     return {
         server,
         host,
         port: resolvedPort,
         url: `http://${urlHost}:${resolvedPort}`,
         overlayBridgeToken: handler.getOverlayBridgeToken(),
+        ...(bootstrapPairing ? {
+            bootstrapPairing,
+            pairingEndpoint: bootstrapPairing.exchangeEndpoint || '/api/auth/pair',
+        } : {}),
         close,
     };
 }
@@ -1023,7 +1803,7 @@ export async function startStandaloneServer(
 /**
  * Clean fallback provider used when the full compiled runtime provider
  * (`sidecar-runtime.js`) is not yet wired in. Supports health, snapshot ETag
- * polling, and safe basic actions.
+ * polling, focus/workspace separation, privacy mask state, and safe basic actions.
  */
 export function createFallbackSidecarProvider(
     options: { version?: string } = {},
@@ -1031,7 +1811,12 @@ export function createFallbackSidecarProvider(
     const version = options.version || DEFAULT_SIDECAR_VERSION;
     let paused = false;
     let language: 'zh' | 'en' | 'both' = 'both';
+    let privacyMasked = true;
     let refreshCount = 0;
+    let activeConversationId: string | null = null;
+    let ackFocusRevision = 0;
+    let registeredWorkspaces: string[] = [];
+    let dataRevision = 1;
 
     function formatUtcClock(): string {
         const now = new Date();
@@ -1043,7 +1828,8 @@ export function createFallbackSidecarProvider(
             time: formatUtcClock(),
             language,
             paused,
-            activeConversationId: query.pinnedConversationId || query.conversationId || null,
+            privacyMasked,
+            activeConversationId,
             conversations: [],
             tabs: {
                 overview: `<section class="acm-fallback-card"><h2>Antigravity Context Monitor</h2><p>Sidecar runtime ready (v${version}). Waiting for telemetry provider binding.</p></section>`,
@@ -1051,6 +1837,9 @@ export function createFallbackSidecarProvider(
             meta: {
                 fallback: true,
                 refreshCount,
+                dataRevision,
+                privacyMasked,
+                workspaceCount: registeredWorkspaces.length,
                 viewMode: query.viewMode || 'aux',
             },
         };
@@ -1059,34 +1848,8 @@ export function createFallbackSidecarProvider(
     return {
         version,
         renderHtml(ctx: SidecarRenderContext): string {
-            const title = ctx.viewMode === 'sidebar'
-                ? 'Antigravity Context Monitor — Sidebar'
-                : 'Antigravity Context Monitor';
-            return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${title}</title>
-  <style>
-    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--ed-bg, #0D1014); color: var(--ed-ink, #F2F4F8); }
-    .acm-shell { padding: 16px; max-width: 960px; margin: 0 auto; }
-    .acm-fallback-card { border: 1px solid var(--ed-border, #232A35); border-radius: 10px; padding: 16px; background: var(--ed-surface, #14181F); }
-    .acm-fallback-card h2 { margin: 0 0 8px; font-size: 16px; }
-    .acm-fallback-card p { margin: 0; color: var(--ed-ink-muted, #8C98A9); font-size: 13px; }
-  </style>
-</head>
-<body data-lang="${language}">
-  <main class="acm-shell" id="monitor-content">
-    <div class="tab-pane active" id="tab-overview">
-      <section class="acm-fallback-card">
-        <h2>Antigravity Context Monitor</h2>
-        <p>Sidecar surface initialized (v${version}, view: ${ctx.viewMode}).</p>
-      </section>
-    </div>
-  </main>
-</body>
-</html>`;
+            const title = ctx.viewMode === 'sidebar' ? 'Antigravity Context Monitor — Sidebar' : 'Antigravity Context Monitor';
+            return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>${title}</title><style>body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:var(--ed-bg,#0D1014);color:var(--ed-ink,#F2F4F8)}.acm-shell{padding:16px;max-width:960px;margin:0 auto}.acm-fallback-card{border:1px solid var(--ed-border,#232A35);border-radius:10px;padding:16px;background:var(--ed-surface,#14181F)}.acm-fallback-card h2{margin:0 0 8px;font-size:16px}.acm-fallback-card p{margin:0;color:var(--ed-ink-muted,#8C98A9);font-size:13px}</style></head><body data-lang="${language}" data-privacy-default="true" data-privacy-masked="${String(privacyMasked)}"><main class="acm-shell" id="monitor-content"><div class="tab-pane active" id="tab-overview"><section class="acm-fallback-card"><h2>Antigravity Context Monitor</h2><p>Sidecar surface initialized (v${version}, view: ${ctx.viewMode}).</p></section></div></main></body></html>`;
         },
         getSnapshot(query: SidecarSnapshotQuery): SidecarSnapshotPayload {
             return buildSnapshot(query);
@@ -1097,20 +1860,66 @@ export function createFallbackSidecarProvider(
                     return { ok: true, result: { pong: true, version } };
                 case 'refresh':
                     refreshCount += 1;
+                    dataRevision += 1;
                     return { ok: true, snapshot: buildSnapshot({}) };
                 case 'togglePause':
                     paused = !paused;
+                    dataRevision += 1;
                     return {
                         ok: true,
                         result: { paused },
                         messages: [{ command: 'setPaused', paused }],
                     };
+                case 'syncHostFocus': {
+                    const rev = typeof action.focusRevision === 'number' ? action.focusRevision : 0;
+                    if (rev >= ackFocusRevision) {
+                        ackFocusRevision = rev;
+                        activeConversationId = typeof action.conversationId === 'string' && action.conversationId
+                            ? action.conversationId
+                            : null;
+                        dataRevision += 1;
+                    }
+                    return {
+                        ok: true,
+                        result: {
+                            accepted: rev >= ackFocusRevision,
+                            ackFocusRevision,
+                            backendEpoch: 1,
+                        },
+                        snapshot: buildSnapshot({}),
+                    };
+                }
+                case 'registerWorkspaces': {
+                    registeredWorkspaces = Array.isArray(action.workspaceUris)
+                        ? action.workspaceUris.filter((u): u is string => typeof u === 'string' && u.length > 0)
+                        : [];
+                    dataRevision += 1;
+                    return {
+                        ok: true,
+                        result: { workspaceUris: [...registeredWorkspaces] },
+                    };
+                }
+                case 'setPrivacyMask':
+                case 'togglePrivacyMask': {
+                    const nextMasked = typeof action.masked === 'boolean'
+                        ? action.masked
+                        : !privacyMasked;
+                    privacyMasked = nextMasked;
+                    dataRevision += 1;
+                    return {
+                        ok: true,
+                        result: { command: 'privacyMaskState', masked: privacyMasked, privacyMasked },
+                        messages: [{ command: 'privacyMaskState', masked: privacyMasked, privacyMasked }],
+                        snapshot: buildSnapshot({}),
+                    };
+                }
                 case 'switchLanguage': {
                     const lang = action.lang;
                     if (lang !== 'zh' && lang !== 'en' && lang !== 'both') {
                         return { ok: false, statusCode: 400, error: 'Invalid language' };
                     }
                     language = lang;
+                    dataRevision += 1;
                     return { ok: true, result: { language }, reload: true };
                 }
                 default:

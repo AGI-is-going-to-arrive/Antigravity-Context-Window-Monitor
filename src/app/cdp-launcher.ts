@@ -4,32 +4,109 @@
  * Critical Compliance & Safety Guarantees:
  * - Pure Node.js built-ins ONLY (`child_process`, `fs`, `os`, `path`) + native OS utilities — zero external npm deps.
  * - ZERO modification to `/Applications/Antigravity.app`, `app.asar`, `Info.plist`, `codesign`, or `com.apple.dock`.
- * - NEVER kills or terminates any running Antigravity App / IDE process from inside this module.
- * - Generated user-invoked macOS launcher prompts the user via native dialog before graceful quit
- *   and polls cleanly up to 15s (0.25s interval) until the old PID exits, eliminating the 5-second
- *   `before-quit` language_server teardown race.
+ * - NEVER terminates any running Antigravity App / IDE process from inside this module.
+ * - Generated user-invoked macOS launcher prompts the user via native dialog (default button "Cancel" / "取消",
+ *   auto-detecting EN/ZH OS locale) before graceful quit and polls cleanly up to 15s (0.25s interval) until
+ *   the old PID exits, eliminating the 5-second `before-quit` language_server teardown race.
+ * - Validates macOS bundle targets against symlinks and verifies `CFBundleIdentifier` before writing or removing.
+ * - Windows Desktop resolution is process-level async cached (TTL >= 60s) so polling NEVER blocks on `powershell.exe`.
  */
 
-import { execFileSync, spawn } from 'child_process';
+import { execFile, execFileSync, spawn } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import {
+    CDP_LAUNCHER_DISPLAY_NAME,
+    LINUX_APPIMAGE_PROCESS_RE,
+    LINUX_CDP_ICON_FILENAME,
+    LINUX_FLATPAK_APP_ID,
+    LINUX_FLATPAK_BOUNDARY_NOTE_EN,
+    LINUX_FLATPAK_BOUNDARY_NOTE_ZH,
+    MACOS_ANTIGRAVITY_BUNDLE_ID,
+    MACOS_CDP_BUNDLE_NAME,
+    MACOS_CDP_LAUNCHER_BUNDLE_ID,
+    MACOS_SYSTEM_APPLICATIONS_DIR,
+    WINDOWS_DESKTOP_PS_SCRIPT,
+    WINDOWS_EXE_REGISTRY_PS_SCRIPT,
+    assertSafeMacOsBundleWriteTarget,
+    buildLinuxBadgedSvg,
+    buildLinuxDesktopEntry,
+    buildLinuxLauncherScript,
+    buildMacOsInfoPlist,
+    buildMacOsLauncherScript as buildCoreMacOsLauncherScript,
+    buildWindowsExplorerRevealCommand,
+    defaultCommandExists,
+    dirnameTargetPath,
+    escapeFreedesktopExecArg,
+    extractAntigravityExeFromLnkFile,
+    findWindowsAntigravityExeFromShortcuts,
+    getCdpLauncherPlatformNotes,
+    getFastWindowsDesktopFallback,
+    getSafeCdpLaunchCommand,
+    getWindowsExeFilesystemCandidates,
+    isMacAppBundleInstalled,
+    isOwnedMacCdpBundle,
+    joinTargetPath,
+    normalizePosixComparable,
+    readMacBundleIdentifier,
+    resolveCoreCdpLauncherPaths,
+    resolveLauncherHomeDir,
+    resolveLinuxXdgDataHome,
+    sanitizeLinuxXdgDir,
+    type WindowsExplorerRevealSpec,
+} from '../core/cdp-launcher-core';
 import type { CdpLauncherActionResult, CdpLauncherStatus } from './sidecar-types';
 
-export type { CdpLauncherActionResult, CdpLauncherStatus };
+export type { CdpLauncherActionResult, CdpLauncherStatus, WindowsExplorerRevealSpec };
+export {
+    CDP_LAUNCHER_DISPLAY_NAME,
+    LINUX_APPIMAGE_PROCESS_RE,
+    LINUX_CDP_ICON_FILENAME,
+    LINUX_FLATPAK_APP_ID,
+    LINUX_FLATPAK_BOUNDARY_NOTE_EN,
+    LINUX_FLATPAK_BOUNDARY_NOTE_ZH,
+    MACOS_ANTIGRAVITY_BUNDLE_ID,
+    MACOS_CDP_BUNDLE_NAME,
+    MACOS_CDP_LAUNCHER_BUNDLE_ID,
+    MACOS_SYSTEM_APPLICATIONS_DIR,
+    WINDOWS_DESKTOP_PS_SCRIPT,
+    WINDOWS_EXE_REGISTRY_PS_SCRIPT,
+    buildLinuxBadgedSvg,
+    buildLinuxDesktopEntry,
+    buildLinuxLauncherScript,
+    buildMacOsInfoPlist,
+    buildWindowsExplorerRevealCommand,
+    escapeFreedesktopExecArg,
+    extractAntigravityExeFromLnkFile,
+    getSafeCdpLaunchCommand,
+    isOwnedMacCdpBundle,
+    readMacBundleIdentifier,
+    resolveLinuxXdgDataHome,
+    sanitizeLinuxXdgDir,
+};
 
-export const CDP_LAUNCHER_DISPLAY_NAME = 'Antigravity (CDP)';
-export const MACOS_CDP_LAUNCHER_BUNDLE_ID = 'com.antigravity-context-monitor.cdp-launcher';
-export const MACOS_ANTIGRAVITY_BUNDLE_ID = 'com.google.antigravity';
-export const MACOS_CDP_BUNDLE_NAME = `${CDP_LAUNCHER_DISPLAY_NAME}.app`;
-export const MACOS_SYSTEM_APPLICATIONS_DIR = '/Applications';
-export const LINUX_CDP_ICON_FILENAME = 'antigravity-cdp.svg';
+export function buildMacOsLauncherScript(targetAppPath?: string): string {
+    return buildCoreMacOsLauncherScript(targetAppPath).replace(
+        '  fi\n\n  if ! wait_for_exit; then',
+        '  fi\n  if ! wait_for_exit; then',
+    );
+}
+
+/** Minimum TTL (60s) for process-level async Windows Desktop & executable caches. */
+export const WINDOWS_DESKTOP_CACHE_TTL_MS = 60_000;
+export const WINDOWS_EXE_CACHE_TTL_MS = 60_000;
 
 const MAX_EMBEDDED_ICON_BYTES = 2 * 1024 * 1024;
 
 export interface SpawnedLauncherProcessLike {
+    pid?: number;
+    exitCode?: number | null;
     unref?: () => void;
-    on?: (event: string, listener: (err: Error) => void) => unknown;
+    on?: (event: string, listener: (...args: any[]) => void) => unknown;
+    once?: (event: string, listener: (...args: any[]) => void) => unknown;
+    off?: (event: string, listener: (...args: any[]) => void) => unknown;
+    removeListener?: (event: string, listener: (...args: any[]) => void) => unknown;
 }
 
 export interface CdpLauncherExecOptions {
@@ -40,6 +117,14 @@ export interface CdpLauncherExecOptions {
     encoding?: BufferEncoding;
 }
 
+export interface CdpLauncherSpawnOptions {
+    detached?: boolean;
+    stdio?: 'ignore';
+    windowsHide?: boolean;
+    windowsVerbatimArguments?: boolean;
+    shell?: boolean;
+}
+
 export interface CdpLauncherOptions {
     platform?: NodeJS.Platform;
     homeDir?: string;
@@ -47,22 +132,38 @@ export interface CdpLauncherOptions {
     appPath?: string;
     /** Optional macOS system Applications directory override (e.g. for isolated tests). Pass `""` to disable system dir lookup. */
     systemAppsDir?: string;
+    /** Optional macOS installed bundle path to prioritize when both `/Applications` and `~/Applications` contain valid copies. */
+    preferredMacAppDir?: string;
     /** Optional Windows Desktop directory override (bypasses PowerShell lookup when set). */
     desktopDir?: string;
-    /** Injectable command runner for Windows PowerShell, macOS icon badging, or Linux `update-desktop-database` in hermetic tests. */
+    /** Optional Windows Desktop cache TTL override (defaults to `WINDOWS_DESKTOP_CACHE_TTL_MS = 60_000`). */
+    desktopCacheTtlMs?: number;
+    /** Injectable clock for deterministic TTL cache tests. */
+    now?: () => number;
+    /** Injectable sync command runner for explicit setup/remove actions in hermetic tests. */
     execFileSyncFn?: (
         file: string,
         args: readonly string[],
         options?: CdpLauncherExecOptions,
     ) => unknown;
+    /** Injectable async command runner for non-blocking Windows Desktop & registry probes in tests. */
+    execFileAsyncFn?: (
+        file: string,
+        args: readonly string[],
+        options?: CdpLauncherExecOptions,
+    ) => Promise<string | Buffer>;
     /** Injectable detached process spawner for hermetic `revealCdpLauncher` tests. */
     spawnImpl?: (
         command: string,
         args: readonly string[],
-        options?: { detached?: boolean; stdio?: 'ignore'; windowsHide?: boolean },
+        options?: CdpLauncherSpawnOptions,
     ) => SpawnedLauncherProcessLike | undefined;
-    /** Injectable PATH lookup for Linux `antigravity` binary detection in tests. */
+    /** Injectable PATH lookup for Linux `antigravity` / `xdg-open` / `flatpak` binary detection in tests. */
     commandExistsFn?: (cmd: string) => boolean;
+    /** Optional settle window (ms) for `revealCdpLauncherAsync` early-exit verification (default 150ms). */
+    revealSettleMs?: number;
+    /** Optional spawn timeout (ms) for `revealCdpLauncherAsync` (default 3000ms). */
+    revealSpawnTimeoutMs?: number;
 }
 
 export interface ResolvedCdpLauncherPaths {
@@ -89,112 +190,38 @@ export interface ResolvedCdpLauncherPaths {
     linuxWrapperPath?: string;
     linuxDesktopEntryPath?: string;
     linuxIconPath?: string;
+    linuxXdgDataHome?: string;
 }
 
-// ─── Cross-Platform Path & Escaping Helpers ──────────────────────────────────
+// ─── Process-Level Async Caches (Windows Desktop & Registry Exe) ─────────────
 
-function joinTargetPath(platform: NodeJS.Platform, ...segments: string[]): string {
-    if (
-        platform === 'win32'
-        && segments.length > 0
-        && (/^[A-Za-z]:/.test(segments[0]) || segments[0].includes('\\'))
-    ) {
-        return path.win32.join(...segments);
-    }
-    return path.join(...segments);
+interface CachedDesktopEntry {
+    dir: string;
+    expiresAt: number;
 }
 
-function dirnameTargetPath(platform: NodeJS.Platform, target: string): string {
-    if (platform === 'win32' && (/^[A-Za-z]:/.test(target) || target.includes('\\'))) {
-        return path.win32.dirname(target);
-    }
-    return path.dirname(target);
+interface CachedWindowsExeEntry {
+    exePath: string | null;
+    expiresAt: number;
 }
 
-function normalizePosixComparable(p: string): string {
-    return path.resolve(p).replace(/\/+$/, '') || '/';
+const windowsDesktopDirCache = new Map<string, CachedDesktopEntry>();
+const windowsDesktopDirInFlight = new Map<string, Promise<string>>();
+const windowsExeCache = new Map<string, CachedWindowsExeEntry>();
+const windowsExeInFlight = new Map<string, Promise<string | null>>();
+
+export function clearWindowsDesktopDirCache(): void {
+    windowsDesktopDirCache.clear();
+    windowsDesktopDirInFlight.clear();
 }
 
-function getRealOsHomeDir(): string {
-    try {
-        const ui = os.userInfo();
-        if (ui && ui.homedir && ui.homedir.trim()) {
-            return ui.homedir.trim();
-        }
-    } catch {
-        // Fallback if passwd database lookup is unavailable
-    }
-    return os.homedir();
+export function clearWindowsLauncherCaches(): void {
+    clearWindowsDesktopDirCache();
+    windowsExeCache.clear();
+    windowsExeInFlight.clear();
 }
 
-function resolveHomeDir(opts: CdpLauncherOptions, platform: NodeJS.Platform): string {
-    if (opts.homeDir && opts.homeDir.trim()) {
-        return opts.homeDir.trim();
-    }
-    const env = opts.env ?? process.env;
-    if (platform === 'win32') {
-        if (env.USERPROFILE && env.USERPROFILE.trim()) { return env.USERPROFILE.trim(); }
-        if (env.HOMEDRIVE && env.HOMEPATH) { return `${env.HOMEDRIVE}${env.HOMEPATH}`; }
-    } else if (env.HOME && env.HOME.trim()) {
-        return env.HOME.trim();
-    }
-    return os.homedir();
-}
-
-/**
- * Determine the macOS system Applications directory while maintaining strict test isolation.
- * - Explicit `opts.systemAppsDir` or `env.ACM_MACOS_APPLICATIONS_DIR` always takes precedence.
- * - When `homeDir` or `HOME` is overridden in tests without explicit `systemAppsDir`, returns `null`
- *   so tests NEVER inspect, write, or delete inside the host's real `/Applications`.
- */
-function resolveMacSystemAppsDir(opts: CdpLauncherOptions, env: NodeJS.ProcessEnv): string | null {
-    if (opts.systemAppsDir !== undefined) {
-        const trimmed = opts.systemAppsDir.trim();
-        return trimmed || null;
-    }
-    if (typeof env.ACM_MACOS_APPLICATIONS_DIR === 'string') {
-        const trimmed = env.ACM_MACOS_APPLICATIONS_DIR.trim();
-        return trimmed || null;
-    }
-    if (opts.homeDir && opts.homeDir.trim()) {
-        return null;
-    }
-    const realHome = normalizePosixComparable(getRealOsHomeDir());
-    if (typeof env.HOME === 'string' && env.HOME.trim()) {
-        if (normalizePosixComparable(env.HOME.trim()) !== realHome) {
-            return null;
-        }
-    }
-    if (opts.platform && opts.platform !== process.platform) {
-        return null;
-    }
-    return MACOS_SYSTEM_APPLICATIONS_DIR;
-}
-
-function isDirectoryWritable(dirPath: string): boolean {
-    try {
-        if (!fs.existsSync(dirPath)) {
-            return false;
-        }
-        const st = fs.statSync(dirPath);
-        if (!st.isDirectory()) {
-            return false;
-        }
-        if (process.platform !== 'win32' && (st.mode & 0o222) === 0) {
-            return false;
-        }
-        fs.accessSync(dirPath, fs.constants.W_OK | fs.constants.X_OK);
-        return true;
-    } catch {
-        return false;
-    }
-}
-
-function isMacAppBundleInstalled(appDir: string | undefined): boolean {
-    if (!appDir) { return false; }
-    return fs.existsSync(path.join(appDir, 'Contents', 'Info.plist'))
-        && fs.existsSync(path.join(appDir, 'Contents', 'MacOS', 'launch'));
-}
+// ─── Command Runners & Escaping Helpers ──────────────────────────────────────
 
 function createDefaultRunner(
     execFileSyncFn?: CdpLauncherOptions['execFileSyncFn'],
@@ -210,57 +237,160 @@ function createDefaultRunner(
             }));
 }
 
-function escapeSingleQuotedPosix(value: string): string {
-    return `'${value.replace(/'/g, `'\\''`)}'`;
-}
-
-function escapeExtendedRegex(value: string): string {
-    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-function escapeXmlText(value: string): string {
-    return value
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&apos;');
-}
-
-function escapeFreedesktopExecArg(value: string): string {
-    const clean = value.replace(/[\r\n]+/g, '');
-    const pctEscaped = clean.replace(/%/g, '%%');
-    if (pctEscaped.length === 0 || /[\s"'\\><~|&;$*?#()`]/.test(pctEscaped)) {
-        const execQuoted = pctEscaped.replace(/([\\"`$])/g, '\\$1');
-        const desktopEscaped = execQuoted.replace(/\\/g, '\\\\');
-        return `"${desktopEscaped}"`;
+function createDefaultAsyncRunner(
+    execFileAsyncFn?: CdpLauncherOptions['execFileAsyncFn'],
+): (file: string, args: readonly string[], options?: CdpLauncherExecOptions) => Promise<string | Buffer> {
+    if (execFileAsyncFn) {
+        return execFileAsyncFn;
     }
-    return pctEscaped;
+    return (file: string, args: readonly string[], options?: CdpLauncherExecOptions) =>
+        new Promise<string>((resolve, reject) => {
+            execFile(file, [...args], {
+                env: options?.env,
+                windowsHide: options?.windowsHide ?? true,
+                timeout: options?.timeout ?? 3_000,
+                encoding: options?.encoding ?? 'utf8',
+            }, (err, stdout) => {
+                if (err) {
+                    reject(err);
+                    return;
+                }
+                resolve(typeof stdout === 'string' ? stdout : String(stdout ?? ''));
+            });
+        });
 }
 
-function defaultCommandExists(cmd: string, env: NodeJS.ProcessEnv = process.env): boolean {
-    const pathEnv = env.PATH || '';
-    for (const dir of pathEnv.split(path.delimiter)) {
-        if (!dir) { continue; }
-        const full = path.join(dir, cmd);
-        try {
-            const st = fs.statSync(full);
-            if (st.isFile()) { return true; }
-        } catch {
-            // ignore
-        }
+// ─── Windows Desktop Dir (Process-Level Async Cache, Zero Sync Polling) ──────
+
+function desktopCacheKey(homeDir: string): string {
+    return homeDir.trim().toLowerCase();
+}
+
+function parseSingleLinePsOutput(raw: unknown): string | null {
+    const text = Buffer.isBuffer(raw)
+        ? raw.toString('utf8')
+        : (typeof raw === 'string' ? raw : '');
+    const cleaned = text.replace(/^\uFEFF/, '').trim();
+    if (cleaned && !/[\r\n]/.test(cleaned)) {
+        return cleaned;
     }
-    return false;
+    return null;
 }
 
-export const WINDOWS_DESKTOP_PS_SCRIPT =
-    "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; [Environment]::GetFolderPath('Desktop')";
-
-function resolveWindowsDesktopDir(opts: CdpLauncherOptions, homeDir: string, env: NodeJS.ProcessEnv): string {
+/**
+ * Asynchronously resolve the user's real Windows Desktop folder (handling OneDrive
+ * Known Folder Move) and cache it at process level for >= 60s (`WINDOWS_DESKTOP_CACHE_TTL_MS`).
+ */
+export async function resolveWindowsDesktopDirAsync(opts: CdpLauncherOptions = {}): Promise<string> {
     if (opts.desktopDir && opts.desktopDir.trim()) {
         return opts.desktopDir.trim();
     }
-    const fallback = joinTargetPath('win32', homeDir, 'Desktop');
+    const env = opts.env ?? process.env;
+    const homeDir = resolveLauncherHomeDir(opts, 'win32');
+    const key = desktopCacheKey(homeDir);
+    const nowFn = opts.now ?? (() => Date.now());
+    const ttlMs = opts.desktopCacheTtlMs ?? WINDOWS_DESKTOP_CACHE_TTL_MS;
+
+    const cached = windowsDesktopDirCache.get(key);
+    if (cached && nowFn() < cached.expiresAt) {
+        return cached.dir;
+    }
+
+    const inFlight = windowsDesktopDirInFlight.get(key);
+    if (inFlight) {
+        return inFlight;
+    }
+
+    const fallback = getFastWindowsDesktopFallback(homeDir, env);
+    const promise = (async () => {
+        let resolved = fallback;
+        if (process.platform === 'win32' || typeof opts.execFileAsyncFn === 'function') {
+            try {
+                const asyncRunner = createDefaultAsyncRunner(opts.execFileAsyncFn);
+                const raw = await asyncRunner(
+                    'powershell.exe',
+                    ['-NoProfile', '-NonInteractive', '-Command', WINDOWS_DESKTOP_PS_SCRIPT],
+                    { env, windowsHide: true, stdio: 'pipe', timeout: 3_000, encoding: 'utf8' },
+                );
+                const cleaned = parseSingleLinePsOutput(raw);
+                if (cleaned) {
+                    resolved = cleaned;
+                }
+            } catch {
+                // Fallback cleanly to fast heuristic / %USERPROFILE%\Desktop
+            }
+        }
+        windowsDesktopDirCache.set(key, {
+            dir: resolved,
+            expiresAt: nowFn() + ttlMs,
+        });
+        return resolved;
+    })().finally(() => {
+        windowsDesktopDirInFlight.delete(key);
+    });
+
+    windowsDesktopDirInFlight.set(key, promise);
+    return promise;
+}
+
+/**
+ * Force an asynchronous refresh of the cached Windows Desktop folder path.
+ */
+export async function refreshWindowsDesktopDirCache(opts: CdpLauncherOptions = {}): Promise<string> {
+    const homeDir = resolveLauncherHomeDir(opts, 'win32');
+    windowsDesktopDirCache.delete(desktopCacheKey(homeDir));
+    return resolveWindowsDesktopDirAsync(opts);
+}
+
+/**
+ * Non-blocking synchronous getter for the Windows Desktop folder path.
+ * NEVER spawns synchronous `powershell.exe` during polling: returns the cached
+ * value immediately if fresh, otherwise returns a zero-subprocess fallback while
+ * triggering a deduplicated background async refresh.
+ */
+export function getCachedWindowsDesktopDir(opts: CdpLauncherOptions = {}): string {
+    if (opts.desktopDir && opts.desktopDir.trim()) {
+        return opts.desktopDir.trim();
+    }
+    const env = opts.env ?? process.env;
+    const homeDir = resolveLauncherHomeDir(opts, 'win32');
+    const key = desktopCacheKey(homeDir);
+    const nowFn = opts.now ?? (() => Date.now());
+
+    const cached = windowsDesktopDirCache.get(key);
+    if (cached && nowFn() < cached.expiresAt) {
+        return cached.dir;
+    }
+
+    if (process.platform === 'win32' || typeof opts.execFileAsyncFn === 'function') {
+        void resolveWindowsDesktopDirAsync(opts).catch(() => { /* best-effort background warmup */ });
+    }
+
+    return cached?.dir ?? getFastWindowsDesktopFallback(homeDir, env);
+}
+
+/**
+ * Resolve Windows Desktop for explicit user-initiated setup/remove actions:
+ * uses the warm cache first, and only runs a single sync PowerShell query when the
+ * cache is cold (populating the 60s cache for subsequent polls).
+ */
+function resolveWindowsDesktopDirForAction(
+    opts: CdpLauncherOptions,
+    homeDir: string,
+    env: NodeJS.ProcessEnv,
+): string {
+    if (opts.desktopDir && opts.desktopDir.trim()) {
+        return opts.desktopDir.trim();
+    }
+    const key = desktopCacheKey(homeDir);
+    const nowFn = opts.now ?? (() => Date.now());
+    const ttlMs = opts.desktopCacheTtlMs ?? WINDOWS_DESKTOP_CACHE_TTL_MS;
+    const cached = windowsDesktopDirCache.get(key);
+    if (cached && nowFn() < cached.expiresAt) {
+        return cached.dir;
+    }
+
+    let resolved = getFastWindowsDesktopFallback(homeDir, env);
     if (process.platform === 'win32' || typeof opts.execFileSyncFn === 'function') {
         try {
             const runner = createDefaultRunner(opts.execFileSyncFn);
@@ -269,317 +399,147 @@ function resolveWindowsDesktopDir(opts: CdpLauncherOptions, homeDir: string, env
                 ['-NoProfile', '-NonInteractive', '-Command', WINDOWS_DESKTOP_PS_SCRIPT],
                 { env, windowsHide: true, stdio: 'pipe', timeout: 3_000, encoding: 'utf8' },
             );
-            const text = Buffer.isBuffer(raw)
-                ? raw.toString('utf8')
-                : (typeof raw === 'string' ? raw : '');
-            const cleaned = text.replace(/^\uFEFF/, '').trim();
-            if (cleaned && !/[\r\n]/.test(cleaned)) {
-                return cleaned;
+            const cleaned = parseSingleLinePsOutput(raw);
+            if (cleaned) {
+                resolved = cleaned;
             }
         } catch {
             // Fallback cleanly to %USERPROFILE%\Desktop
         }
     }
-    return fallback;
+    windowsDesktopDirCache.set(key, {
+        dir: resolved,
+        expiresAt: nowFn() + ttlMs,
+    });
+    return resolved;
+}
+
+// ─── Windows Executable Detection (Async Registry Cache + Core Helpers) ──────
+
+function resolveWindowsEnvDirs(homeDir: string, env: NodeJS.ProcessEnv): { localAppData: string; appData: string; defaultExe: string } {
+    const localAppData = env.LOCALAPPDATA?.trim()
+        ? env.LOCALAPPDATA.trim()
+        : joinTargetPath('win32', homeDir, 'AppData', 'Local');
+    const appData = env.APPDATA?.trim()
+        ? env.APPDATA.trim()
+        : joinTargetPath('win32', homeDir, 'AppData', 'Roaming');
+    const defaultExe = joinTargetPath('win32', localAppData, 'Programs', 'Antigravity', 'Antigravity.exe');
+    return { localAppData, appData, defaultExe };
+}
+
+function findWindowsExeFast(
+    opts: CdpLauncherOptions,
+    homeDir: string,
+    env: NodeJS.ProcessEnv,
+    localAppData: string,
+    appData: string,
+): string | null {
+    if (opts.appPath?.trim()) {
+        return opts.appPath.trim();
+    }
+    const fsMatch = getWindowsExeFilesystemCandidates(localAppData, env).find((p) => fs.existsSync(p));
+    return fsMatch ?? findWindowsAntigravityExeFromShortcuts(homeDir, appData, env);
 }
 
 /**
- * Race-free, zero-patch terminal command for launching Antigravity with
- * Chromium's documented `--remote-debugging-port=0` flag.
+ * Asynchronously probe Windows executable candidates including `%LOCALAPPDATA%`,
+ * `%ProgramFiles%`, `%ProgramFiles(x86)%`, Start Menu `.lnk` shortcuts, and
+ * Uninstall / App Paths registry keys (cached for >= 60s).
  */
-export function getSafeCdpLaunchCommand(platform: NodeJS.Platform = process.platform): string {
-    if (platform === 'darwin') {
-        return 'while pgrep -f \'^/Applications/Antigravity\\.app/Contents/MacOS/Antigravity($| )\' >/dev/null; do sleep 0.5; done; open -a "/Applications/Antigravity.app" --args --remote-debugging-port=0';
+export async function resolveWindowsAntigravityExeAsync(opts: CdpLauncherOptions = {}): Promise<string> {
+    const env = opts.env ?? process.env;
+    const homeDir = resolveLauncherHomeDir(opts, 'win32');
+    const { localAppData, appData, defaultExe } = resolveWindowsEnvDirs(homeDir, env);
+
+    const fastMatch = findWindowsExeFast(opts, homeDir, env, localAppData, appData);
+    if (fastMatch) { return fastMatch; }
+
+    const key = desktopCacheKey(homeDir);
+    const nowFn = opts.now ?? (() => Date.now());
+    const cached = windowsExeCache.get(key);
+    if (cached && nowFn() < cached.expiresAt) {
+        return cached.exePath || defaultExe;
     }
-    if (platform === 'win32') {
-        return '& "$env:LOCALAPPDATA\\Programs\\Antigravity\\Antigravity.exe" --remote-debugging-port=0';
+
+    let inFlight = windowsExeInFlight.get(key);
+    if (!inFlight) {
+        inFlight = (async (): Promise<string | null> => {
+            let found: string | null = null;
+            if (process.platform === 'win32' || typeof opts.execFileAsyncFn === 'function') {
+                try {
+                    const asyncRunner = createDefaultAsyncRunner(opts.execFileAsyncFn);
+                    const raw = await asyncRunner(
+                        'powershell.exe',
+                        ['-NoProfile', '-NonInteractive', '-Command', WINDOWS_EXE_REGISTRY_PS_SCRIPT],
+                        { env, windowsHide: true, stdio: 'pipe', timeout: 3_000, encoding: 'utf8' },
+                    );
+                    const cleaned = parseSingleLinePsOutput(raw);
+                    if (cleaned && /antigravity\.exe$/i.test(cleaned)) {
+                        found = cleaned;
+                    }
+                } catch {
+                    // Best-effort registry fallback
+                }
+            }
+            windowsExeCache.set(key, {
+                exePath: found,
+                expiresAt: nowFn() + WINDOWS_EXE_CACHE_TTL_MS,
+            });
+            return found;
+        })().finally(() => {
+            windowsExeInFlight.delete(key);
+        });
+        windowsExeInFlight.set(key, inFlight);
     }
-    return 'antigravity --remote-debugging-port=0';
+
+    const regFound = await inFlight;
+    return regFound || defaultExe;
+}
+
+function resolveWindowsAntigravityExeSync(
+    opts: CdpLauncherOptions,
+    homeDir: string,
+    env: NodeJS.ProcessEnv,
+    localAppData: string,
+    appData: string,
+    defaultExe: string,
+): string {
+    const fastMatch = findWindowsExeFast(opts, homeDir, env, localAppData, appData);
+    if (fastMatch) { return fastMatch; }
+    const key = desktopCacheKey(homeDir);
+    const nowFn = opts.now ?? (() => Date.now());
+    const cached = windowsExeCache.get(key);
+    if (cached && nowFn() < cached.expiresAt && cached.exePath) {
+        return cached.exePath;
+    }
+    if (process.platform === 'win32' || typeof opts.execFileAsyncFn === 'function') {
+        void resolveWindowsAntigravityExeAsync(opts).catch(() => { /* best-effort async registry warmup */ });
+    }
+    return cached?.exePath || defaultExe;
 }
 
 export function resolveCdpLauncherPaths(opts: CdpLauncherOptions = {}): ResolvedCdpLauncherPaths {
     const platform = opts.platform ?? process.platform;
-    const env = opts.env ?? process.env;
-    const homeDir = resolveHomeDir(opts, platform);
-
-    if (platform === 'darwin') {
-        const macSystemAppsDir = resolveMacSystemAppsDir(opts, env);
-        const macSystemAppDir = macSystemAppsDir
-            ? joinTargetPath('darwin', macSystemAppsDir, MACOS_CDP_BUNDLE_NAME)
-            : undefined;
-        const macUserAppDir = joinTargetPath('darwin', homeDir, 'Applications', MACOS_CDP_BUNDLE_NAME);
-
-        const macCandidateAppDirs: string[] = [];
-        const seenDirs = new Set<string>();
-        for (const candidate of [macSystemAppDir, macUserAppDir]) {
-            if (!candidate) { continue; }
-            const key = normalizePosixComparable(candidate);
-            if (!seenDirs.has(key)) {
-                seenDirs.add(key);
-                macCandidateAppDirs.push(candidate);
-            }
-        }
-
-        const preferSystem = Boolean(macSystemAppsDir && macSystemAppDir && isDirectoryWritable(macSystemAppsDir));
-        const macPreferredAppDir = preferSystem && macSystemAppDir ? macSystemAppDir : macUserAppDir;
-        const installedAppDir = macCandidateAppDirs.find(isMacAppBundleInstalled);
-        const macAppDir = installedAppDir ?? macPreferredAppDir;
-
-        let targetAppPath = opts.appPath?.trim() || '';
-        if (!targetAppPath) {
-            const targetCandidates = [
-                ...(macSystemAppsDir ? [joinTargetPath('darwin', macSystemAppsDir, 'Antigravity.app')] : []),
-                '/Applications/Antigravity.app',
-                joinTargetPath('darwin', homeDir, 'Applications', 'Antigravity.app'),
-            ];
-            targetAppPath = targetCandidates.find((p) => fs.existsSync(p))
-                || (macSystemAppsDir ? joinTargetPath('darwin', macSystemAppsDir, 'Antigravity.app') : '/Applications/Antigravity.app');
-        }
-
-        const auxiliaryPaths = macCandidateAppDirs.filter(
-            (p) => normalizePosixComparable(p) !== normalizePosixComparable(macAppDir),
-        );
-
-        return {
-            platform,
-            supported: true,
-            homeDir,
-            launcherPath: macAppDir,
-            targetAppPath,
-            auxiliaryPaths,
-            macAppDir,
-            ...(macSystemAppsDir ? { macSystemAppsDir } : {}),
-            ...(macSystemAppDir ? { macSystemAppDir } : {}),
-            macUserAppDir,
-            macPreferredAppDir,
-            macCandidateAppDirs,
-        };
-    }
-
     if (platform === 'win32') {
-        const localAppData = env.LOCALAPPDATA?.trim()
-            ? env.LOCALAPPDATA.trim()
-            : joinTargetPath('win32', homeDir, 'AppData', 'Local');
-        const appData = env.APPDATA?.trim()
-            ? env.APPDATA.trim()
-            : joinTargetPath('win32', homeDir, 'AppData', 'Roaming');
-        const winDataDir = joinTargetPath('win32', localAppData, 'AntigravityContextMonitor');
-        const winCmdPath = joinTargetPath('win32', winDataDir, 'launch-antigravity-cdp.cmd');
-        const winIconPath = joinTargetPath('win32', winDataDir, 'antigravity-cdp.ico');
-        const winDesktopDir = resolveWindowsDesktopDir(opts, homeDir, env);
-        const winDesktopLnkPath = joinTargetPath('win32', winDesktopDir, `${CDP_LAUNCHER_DISPLAY_NAME}.lnk`);
-        const winFallbackDesktopLnkPath = joinTargetPath('win32', homeDir, 'Desktop', `${CDP_LAUNCHER_DISPLAY_NAME}.lnk`);
-        const winStartMenuLnkPath = joinTargetPath(
-            'win32',
-            appData,
-            'Microsoft',
-            'Windows',
-            'Start Menu',
-            'Programs',
-            `${CDP_LAUNCHER_DISPLAY_NAME}.lnk`,
-        );
-        const targetAppPath = opts.appPath?.trim()
-            || joinTargetPath('win32', localAppData, 'Programs', 'Antigravity', 'Antigravity.exe');
-        const auxiliaryPaths = [winStartMenuLnkPath, winIconPath, winCmdPath];
-        if (winFallbackDesktopLnkPath.toLowerCase() !== winDesktopLnkPath.toLowerCase()) {
-            auxiliaryPaths.push(winFallbackDesktopLnkPath);
-        }
-        return {
+        const env = opts.env ?? process.env;
+        const homeDir = resolveLauncherHomeDir(opts, 'win32');
+        const { localAppData, appData, defaultExe } = resolveWindowsEnvDirs(homeDir, env);
+        // Strictly non-blocking cached Desktop & exe lookup (NEVER spawns sync powershell.exe during polling)
+        const winDesktopDir = getCachedWindowsDesktopDir({ ...opts, homeDir, env });
+        const targetAppPath = resolveWindowsAntigravityExeSync(opts, homeDir, env, localAppData, appData, defaultExe);
+        return resolveCoreCdpLauncherPaths({
+            ...opts,
             platform,
-            supported: true,
             homeDir,
-            launcherPath: winDesktopLnkPath,
-            targetAppPath,
-            auxiliaryPaths,
-            winCmdPath,
-            winDesktopDir,
-            winDesktopLnkPath,
-            winFallbackDesktopLnkPath,
-            winStartMenuLnkPath,
-            winIconPath,
-        };
+            env,
+            desktopDir: winDesktopDir,
+            appPath: targetAppPath,
+        });
     }
-
-    if (platform === 'linux') {
-        const linuxWrapperPath = joinTargetPath('linux', homeDir, '.local', 'bin', 'antigravity-cdp');
-        const linuxDesktopEntryPath = joinTargetPath(
-            'linux',
-            homeDir,
-            '.local',
-            'share',
-            'applications',
-            'antigravity-cdp.desktop',
-        );
-        const linuxIconPath = joinTargetPath(
-            'linux',
-            homeDir,
-            '.local',
-            'share',
-            'icons',
-            'hicolor',
-            'scalable',
-            'apps',
-            LINUX_CDP_ICON_FILENAME,
-        );
-        let targetAppPath = opts.appPath?.trim() || '';
-        if (!targetAppPath) {
-            const candidates = [
-                '/usr/bin/antigravity',
-                '/usr/local/bin/antigravity',
-                '/snap/bin/antigravity',
-                '/opt/Antigravity/antigravity',
-                joinTargetPath('linux', homeDir, '.local', 'bin', 'antigravity'),
-            ];
-            targetAppPath = candidates.find((p) => fs.existsSync(p)) || 'antigravity';
-        }
-        return {
-            platform,
-            supported: true,
-            homeDir,
-            launcherPath: linuxDesktopEntryPath,
-            targetAppPath,
-            auxiliaryPaths: [linuxWrapperPath, linuxIconPath],
-            linuxWrapperPath,
-            linuxDesktopEntryPath,
-            linuxIconPath,
-        };
-    }
-
-    return {
-        platform,
-        supported: false,
-        homeDir,
-        launcherPath: '',
-        targetAppPath: opts.appPath?.trim() || '',
-        auxiliaryPaths: [],
-    };
+    return resolveCoreCdpLauncherPaths(opts);
 }
 
-// ─── Launcher File & Icon Badge Builders ─────────────────────────────────────
-
-export function buildMacOsInfoPlist(): string {
-    return [
-        '<?xml version="1.0" encoding="UTF-8"?>',
-        '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
-        '<plist version="1.0">',
-        '<dict>',
-        '    <key>CFBundleDevelopmentRegion</key>',
-        '    <string>en</string>',
-        '    <key>CFBundleDisplayName</key>',
-        `    <string>${escapeXmlText(CDP_LAUNCHER_DISPLAY_NAME)}</string>`,
-        '    <key>CFBundleExecutable</key>',
-        '    <string>launch</string>',
-        '    <key>CFBundleIconFile</key>',
-        '    <string>icon.icns</string>',
-        '    <key>CFBundleIdentifier</key>',
-        `    <string>${escapeXmlText(MACOS_CDP_LAUNCHER_BUNDLE_ID)}</string>`,
-        '    <key>CFBundleInfoDictionaryVersion</key>',
-        '    <string>6.0</string>',
-        '    <key>CFBundleName</key>',
-        `    <string>${escapeXmlText(CDP_LAUNCHER_DISPLAY_NAME)}</string>`,
-        '    <key>CFBundlePackageType</key>',
-        '    <string>APPL</string>',
-        '    <key>CFBundleShortVersionString</key>',
-        '    <string>1.0.0</string>',
-        '    <key>CFBundleVersion</key>',
-        '    <string>1</string>',
-        '    <key>LSMinimumSystemVersion</key>',
-        '    <string>12.0</string>',
-        '    <key>LSUIElement</key>',
-        '    <true/>',
-        '</dict>',
-        '</plist>',
-        '',
-    ].join('\n');
-}
-
-export function buildMacOsLauncherScript(targetAppPath = '/Applications/Antigravity.app'): string {
-    const cleanTarget = targetAppPath.replace(/\/+$/, '') || '/Applications/Antigravity.app';
-    const mainBinaryRegex = `^${escapeExtendedRegex(`${cleanTarget}/Contents/MacOS/Antigravity`)}($| )`;
-
-    return [
-        '#!/usr/bin/env bash',
-        'set -euo pipefail',
-        '',
-        '# Zero-patch persistent CDP launcher generated by Antigravity Context Monitor.',
-        '# Never modifies /Applications/Antigravity.app and eliminates the 5s before-quit race.',
-        `APP_PATH=${escapeSingleQuotedPosix(cleanTarget)}`,
-        `APP_REGEX=${escapeSingleQuotedPosix(mainBinaryRegex)}`,
-        `BUNDLE_ID=${escapeSingleQuotedPosix(MACOS_ANTIGRAVITY_BUNDLE_ID)}`,
-        '',
-        'if [ ! -d "$APP_PATH" ]; then',
-        '  osascript -e \'activate\' -e \'display alert "Antigravity App Not Found" message "Could not locate Antigravity.app. Please install Antigravity App first."\' >/dev/null 2>&1 || true',
-        '  exit 1',
-        'fi',
-        '',
-        'find_main_pids() {',
-        '  pgrep -f "$APP_REGEX" 2>/dev/null || true',
-        '}',
-        '',
-        'wait_for_exit() {',
-        '  local max_ticks=60',
-        '  local tick=0',
-        '  while [ "$tick" -lt "$max_ticks" ]; do',
-        '    if [ -z "$(find_main_pids)" ]; then',
-        '      return 0',
-        '    fi',
-        '    sleep 0.25',
-        '    tick=$((tick + 1))',
-        '  done',
-        '  return 1',
-        '}',
-        '',
-        'PIDS="$(find_main_pids)"',
-        '',
-        'if [ -n "$PIDS" ]; then',
-        '  HAS_CDP=0',
-        '  for pid in $PIDS; do',
-        '    CMDLINE="$(ps -p "$pid" -o command= 2>/dev/null || true)"',
-        '    if printf \'%s\' "$CMDLINE" | grep -q -- \'--remote-debugging-port\'; then',
-        '      HAS_CDP=1',
-        '      break',
-        '    fi',
-        '  done',
-        '',
-        '  if [ "$HAS_CDP" -eq 1 ]; then',
-        '    open -a "$APP_PATH"',
-        '    exit 0',
-        '  fi',
-        '',
-        '  CHOICE="$(osascript \\',
-        '    -e \'activate\' \\',
-        '    -e \'set dialogResult to display dialog "Antigravity is currently running without CDP remote debugging. Quit & relaunch with CDP enabled?" with title "Antigravity (CDP)" buttons {"Cancel", "Quit & Relaunch"} default button "Quit & Relaunch" cancel button "Cancel"\' \\',
-        '    -e \'return button returned of dialogResult\' 2>/dev/null || true)"',
-        '  if [ "$CHOICE" != "Quit & Relaunch" ]; then',
-        '    exit 0',
-        '  fi',
-        '',
-        '  QUIT_RC=0',
-        '  osascript -e "tell application id \\"$BUNDLE_ID\\" to quit" >/dev/null 2>&1 || QUIT_RC=$?',
-        '  if [ "$QUIT_RC" -ne 0 ]; then',
-        '    sleep 0.5',
-        '    if [ -n "$(find_main_pids)" ]; then',
-        '      osascript \\',
-        '        -e \'activate\' \\',
-        '        -e \'display alert "Permission Needed to Quit Antigravity" message "Allow Automation permission for Antigravity (CDP) in System Settings > Privacy & Security > Automation, or press Cmd+Q to quit Antigravity first and then open Antigravity (CDP) again."\' >/dev/null 2>&1 || true',
-        '      exit 1',
-        '    fi',
-        '  fi',
-        '  if ! wait_for_exit; then',
-        '    osascript -e \'activate\' -e \'display alert "Antigravity Still Closing" message "Antigravity did not finish exiting within 15 seconds. Wait for its Dock indicator dot to disappear, then open Antigravity (CDP) again."\' >/dev/null 2>&1 || true',
-        '    exit 1',
-        '  fi',
-        'else',
-        '  # Wait cleanly up to 15s in case a dying PID is still finishing background teardown.',
-        '  if ! wait_for_exit; then',
-        '    exit 1',
-        '  fi',
-        'fi',
-        '',
-        'open -a "$APP_PATH" --args --remote-debugging-port=0',
-        '',
-    ].join('\n');
-}
+// ─── Legacy Windows .cmd Helper & Platform Icon/Shortcut Builders ────────────
 
 /**
  * Legacy helper retained for backward compatibility with existing callers/exports.
@@ -633,153 +593,6 @@ export function buildWindowsLauncherCmd(targetExePath?: string): string {
         'exit /b 0',
         '',
     ].join('\r\n');
-}
-
-export function buildLinuxLauncherScript(targetAppPath?: string): string {
-    const rawTarget = targetAppPath && targetAppPath.trim() && targetAppPath.trim() !== 'antigravity'
-        ? targetAppPath.trim().replace(/[\r\n]+/g, '')
-        : 'antigravity';
-    const cleanTarget = rawTarget || 'antigravity';
-
-    return [
-        '#!/usr/bin/env sh',
-        'set -eu',
-        '',
-        '# Zero-patch persistent CDP launcher generated by Antigravity Context Monitor.',
-        '# Detects standard binary, Snap, and AppImage instances while excluding antigravity-cdp itself.',
-        '# Never kills Antigravity — shows a friendly non-killing dialog if an argless instance is open.',
-        `DEFAULT_BIN=${escapeSingleQuotedPosix(cleanTarget)}`,
-        'APP_BIN="${ANTIGRAVITY_BIN:-$DEFAULT_BIN}"',
-        '',
-        'detect_running_state() {',
-        '  ps -eo pid=,args= 2>/dev/null | awk -v self_pid="$$" \'',
-        '    BEGIN { found_cdp = 0; found_nocdp = 0 }',
-        '    {',
-        '      pid = $1',
-        '      if (pid == self_pid) next',
-        '      line = $0',
-        '      sub(/^[ \\t]*[0-9]+[ \\t]+/, "", line)',
-        '      lower = tolower(line)',
-        '      if (lower ~ /(^|[ \\t\\/"\\047])antigravity-cdp([ \\t"\\047]|$)/) next',
-        '      if (index(lower, "antigravity-context-monitor") > 0) next',
-        '      if (index(lower, "language_server") > 0) next',
-        '      if (index(lower, "crashpad") > 0) next',
-        '      if (index(lower, "chrome-sandbox") > 0) next',
-        '      if (lower ~ /(^|[ \\t])--type=/) next',
-        '      if (lower ~ /(^|[ \\t\\/])antigravity[ \\t-]+(ide|tools)([ \\t\\/]|$)/) next',
-        '      exe = tolower($2)',
-        '      cmd_head = lower',
-        '      sub(/[ \\t]+--.*/, "", cmd_head)',
-        '      is_shell = (exe ~ /(^|\\/)(sh|bash|dash|zsh|fish|awk|mawk|gawk|grep|pgrep|ps|env|node|python[0-9.]*)$/)',
-        '      is_main = 0',
-        '      if (exe ~ /(^|\\/)antigravity$/) is_main = 1',
-        '      else if (exe ~ /^\\/snap\\/(bin\\/antigravity|antigravity\\/.*\\/antigravity)$/) is_main = 1',
-        '      else if (exe ~ /(^|\\/)[^\\/]*antigravity[^\\/]*\\.appimage$/) is_main = 1',
-        '      else if (exe ~ /^\\/tmp\\/\\.mount_[^\\/]*antigravity[^\\/]*\\/(.*\\/)?(antigravity|apprun)$/) is_main = 1',
-        '      else if (!is_shell && cmd_head ~ /^\\//) {',
-        '        if (cmd_head ~ /(^|\\/)antigravity$/) is_main = 1',
-        '        else if (cmd_head ~ /(^|\\/)[^\\/]*antigravity[^\\/]*\\.appimage$/) is_main = 1',
-        '        else if (cmd_head ~ /^\\/tmp\\/\\.mount_[^\\/]*antigravity[^\\/]*\\/(.*\\/)?(antigravity|apprun)$/) is_main = 1',
-        '      }',
-        '      if (!is_main) next',
-        '      if (index(lower, "--remote-debugging-port") > 0) found_cdp = 1',
-        '      else found_nocdp = 1',
-        '    }',
-        '    END {',
-        '      if (found_cdp) print "cdp"',
-        '      else if (found_nocdp) print "nocdp"',
-        '      else print "none"',
-        '    }',
-        '  \' || printf \'none\\n\'',
-        '}',
-        '',
-        'show_conflict_notice() {',
-        '  msg="$1"',
-        '  if command -v zenity >/dev/null 2>&1 && zenity --warning --title="Antigravity (CDP)" --text="$msg" >/dev/null 2>&1; then',
-        '    return 0',
-        '  fi',
-        '  if command -v kdialog >/dev/null 2>&1 && kdialog --title "Antigravity (CDP)" --sorry "$msg" >/dev/null 2>&1; then',
-        '    return 0',
-        '  fi',
-        '  if command -v notify-send >/dev/null 2>&1 && notify-send "Antigravity (CDP)" "$msg" >/dev/null 2>&1; then',
-        '    return 0',
-        '  fi',
-        '  printf \'Antigravity (CDP): %s\\n\' "$msg" >&2',
-        '}',
-        '',
-        'STATE="$(detect_running_state)"',
-        '',
-        'if [ "$STATE" = "nocdp" ]; then',
-        '  # Wait cleanly up to 5s if an exiting Antigravity process is still tearing down.',
-        '  max_ticks="${ACM_EXIT_WAIT_TICKS:-20}"',
-        '  tick=0',
-        '  while [ "$tick" -lt "$max_ticks" ]; do',
-        '    sleep 0.25',
-        '    STATE="$(detect_running_state)"',
-        '    if [ "$STATE" != "nocdp" ]; then',
-        '      break',
-        '    fi',
-        '    tick=$((tick + 1))',
-        '  done',
-        'fi',
-        '',
-        'if [ "$STATE" = "nocdp" ]; then',
-        '  show_conflict_notice "Antigravity is already running without CDP remote debugging. Please quit Antigravity completely first, then open Antigravity (CDP) again."',
-        '  exit 1',
-        'fi',
-        '',
-        'exec "$APP_BIN" --remote-debugging-port=0 "$@"',
-        '',
-    ].join('\n');
-}
-
-export function buildLinuxDesktopEntry(wrapperPath: string, iconValue = 'antigravity'): string {
-    const escapedExec = escapeFreedesktopExecArg(wrapperPath);
-    const cleanIcon = (iconValue && iconValue.replace(/[\r\n]+/g, '').trim()) || 'antigravity';
-    return [
-        '[Desktop Entry]',
-        'Type=Application',
-        'Version=1.0',
-        `Name=${CDP_LAUNCHER_DISPLAY_NAME}`,
-        'Comment=Launch Antigravity with local CDP remote debugging enabled for Antigravity Context Monitor',
-        `Exec=${escapedExec} %U`,
-        `Icon=${cleanIcon}`,
-        'Terminal=false',
-        'Categories=Development;IDE;',
-        'StartupWMClass=Antigravity',
-        '',
-    ].join('\n');
-}
-
-export function buildLinuxBadgedSvg(embeddedIcon?: { mimeType: 'image/png' | 'image/svg+xml'; base64: string }): string {
-    const baseLayer = embeddedIcon
-        ? `  <image href="data:${embeddedIcon.mimeType};base64,${embeddedIcon.base64}" x="8" y="8" width="240" height="240" preserveAspectRatio="xMidYMid meet"/>`
-        : [
-            '  <defs>',
-            '    <linearGradient id="acmBg" x1="0%" y1="0%" x2="100%" y2="100%">',
-            '      <stop offset="0%" stop-color="#162033"/>',
-            '      <stop offset="100%" stop-color="#0B101A"/>',
-            '    </linearGradient>',
-            '    <linearGradient id="acmMark" x1="0%" y1="0%" x2="100%" y2="100%">',
-            '      <stop offset="0%" stop-color="#60A5FA"/>',
-            '      <stop offset="100%" stop-color="#3B82F6"/>',
-            '    </linearGradient>',
-            '  </defs>',
-            '  <rect x="12" y="12" width="232" height="232" rx="52" fill="url(#acmBg)" stroke="#2A3750" stroke-width="4"/>',
-            '  <path d="M128 52 L188 184 L156 184 L142 152 L114 152 L100 184 L68 184 Z M128 92 L119 128 L137 128 Z" fill="url(#acmMark)"/>',
-        ].join('\n');
-
-    return [
-        '<?xml version="1.0" encoding="UTF-8"?>',
-        '<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">',
-        baseLayer,
-        '  <g>',
-        '    <rect x="122" y="182" width="124" height="62" rx="18" fill="#0E1522" fill-opacity="0.96" stroke="#5B9CF6" stroke-width="5"/>',
-        '    <text x="184" y="224" text-anchor="middle" fill="#FFFFFF" font-family="Inter, Ubuntu, DejaVu Sans, sans-serif" font-size="38" font-weight="800" letter-spacing="1.5">CDP</text>',
-        '  </g>',
-        '</svg>',
-        '',
-    ].join('\n');
 }
 
 export const MACOS_ICON_BADGE_JXA = [
@@ -996,7 +809,11 @@ function copyMacOsIconIfPresent(
     return false;
 }
 
-function findLinuxOriginalIcon(homeDir: string, targetAppPath: string): { mimeType: 'image/png' | 'image/svg+xml'; base64: string } | undefined {
+function findLinuxOriginalIcon(
+    homeDir: string,
+    targetAppPath: string,
+    xdgDataHome?: string,
+): { mimeType: 'image/png' | 'image/svg+xml'; base64: string } | undefined {
     const candidates: string[] = [];
     if (targetAppPath && targetAppPath.includes('/')) {
         const binDir = path.dirname(targetAppPath);
@@ -1005,6 +822,12 @@ function findLinuxOriginalIcon(homeDir: string, targetAppPath: string): { mimeTy
             path.join(binDir, 'antigravity.svg'),
             path.join(binDir, 'icon.png'),
             path.join(binDir, 'resources', 'app', 'resources', 'linux', 'code.png'),
+        );
+    }
+    if (xdgDataHome) {
+        candidates.push(
+            joinTargetPath('linux', xdgDataHome, 'icons', 'hicolor', 'scalable', 'apps', 'antigravity.svg'),
+            joinTargetPath('linux', xdgDataHome, 'icons', 'hicolor', '256x256', 'apps', 'antigravity.png'),
         );
     }
     candidates.push(
@@ -1036,10 +859,15 @@ function findLinuxOriginalIcon(homeDir: string, targetAppPath: string): { mimeTy
     return undefined;
 }
 
-function writeLinuxBadgedIcon(iconPath: string, homeDir: string, targetAppPath: string): boolean {
+function writeLinuxBadgedIcon(
+    iconPath: string,
+    homeDir: string,
+    targetAppPath: string,
+    xdgDataHome?: string,
+): boolean {
     try {
         fs.mkdirSync(path.dirname(iconPath), { recursive: true });
-        const embedded = findLinuxOriginalIcon(homeDir, targetAppPath);
+        const embedded = findLinuxOriginalIcon(homeDir, targetAppPath, xdgDataHome);
         fs.writeFileSync(iconPath, buildLinuxBadgedSvg(embedded), 'utf8');
         return true;
     } catch {
@@ -1063,44 +891,19 @@ function runLinuxUpdateDesktopDatabase(applicationsDir: string, opts: CdpLaunche
     }
 }
 
-function getPlatformNotes(platform: NodeJS.Platform, launcherPath: string): { noteEn: string; noteZh: string } {
-    if (platform === 'darwin') {
-        return {
-            noteEn: `Creates a zero-patch CDP-badged launcher bundle at "${launcherPath}" (prefers /Applications when writable, falls back to ~/Applications; never modifies /Applications/Antigravity.app). Drag "Antigravity (CDP).app" from Finder into your Dock — NEVER right-click the running Antigravity Dock icon and choose "Keep in Dock" (that pins argless Antigravity.app and loses CDP after restart).`,
-            noteZh: `在 "${launcherPath}" 创建带 CDP 角标的零侵入持久化启动器（优先写入 /Applications，无权限时自动回退 ~/Applications；绝不修改 /Applications/Antigravity.app）。请从访达将「Antigravity (CDP).app」拖入程序坞固定，切勿右键运行中的图标选「在程序坞中保留」（否则固定的是无参原版，完全退出重开后会丢失 CDP）。`,
-        };
-    }
-    if (platform === 'win32') {
-        return {
-            noteEn: `Creates zero-patch Desktop (OneDrive-aware) & Start Menu "${CDP_LAUNCHER_DISPLAY_NAME}" shortcuts with a CDP-badged icon pointing directly to Antigravity.exe --remote-debugging-port=0 (supports native right-click "Pin to taskbar", single icon merge, zero CMD flash; avoid pinning the running taskbar icon directly).`,
-            noteZh: `在真实桌面（兼容 OneDrive 重定向）与开始菜单创建带 CDP 角标的零侵入「${CDP_LAUNCHER_DISPLAY_NAME}」快捷方式，直接指向 Antigravity.exe 并附带 --remote-debugging-port=0（支持原生右键「固定到任务栏」、单图标合并且无黑框闪烁；请勿直接右键运行中的任务栏图标固定）。`,
-        };
-    }
-    if (platform === 'linux') {
-        return {
-            noteEn: `Creates a zero-patch CDP-badged desktop entry at "${launcherPath}" and wrapper in ~/.local/bin/antigravity-cdp (handles standard/Snap/AppImage detection with non-killing conflict dialog and StartupWMClass=Antigravity). Pin "Antigravity (CDP)" from the Ubuntu Application Launcher / Show Apps ("Pin to Dash" / "Add to Favorites") rather than pinning the running Dock window icon.`,
-            noteZh: `在 "${launcherPath}" 创建带 CDP 角标的零侵入桌面入口并在 ~/.local/bin/antigravity-cdp 生成启动脚本（兼容标准安装/Snap/AppImage 检测、冲突时弹窗提醒绝不强杀，保留 StartupWMClass=Antigravity）。请在 Ubuntu「显示应用」菜单中搜索「Antigravity (CDP)」并选择「固定到停靠栏 / 添加到收藏夹」，切勿右键运行中的窗口图标固定。`,
-        };
-    }
-    return {
-        noteEn: `Persistent CDP launcher generation is not supported on platform "${platform}". Launch Antigravity with --remote-debugging-port=0 manually.`,
-        noteZh: `当前平台 "${platform}" 暂不支持自动生成持久化 CDP 启动器，请手动附带 --remote-debugging-port=0 启动 Antigravity。`,
-    };
-}
-
-// ─── Public API: Inspect, Create, Remove ─────────────────────────────────────
+// ─── Public API: Inspect, Create, Reveal, Remove ─────────────────────────────
 
 export function inspectCdpLauncher(opts: CdpLauncherOptions = {}): CdpLauncherStatus {
     const resolved = resolveCdpLauncherPaths(opts);
     const safeTerminalCommand = getSafeCdpLaunchCommand(resolved.platform);
-    const { noteEn, noteZh } = getPlatformNotes(resolved.platform, resolved.launcherPath);
+    const { noteEn, noteZh } = getCdpLauncherPlatformNotes(resolved.platform, resolved.launcherPath);
 
     let installed = false;
     let targetAppFound = false;
 
     if (resolved.platform === 'darwin') {
         const candidates = resolved.macCandidateAppDirs ?? (resolved.macAppDir ? [resolved.macAppDir] : []);
-        installed = candidates.some(isMacAppBundleInstalled);
+        installed = candidates.some((dir) => isMacAppBundleInstalled(dir));
         targetAppFound = Boolean(resolved.targetAppPath && fs.existsSync(resolved.targetAppPath));
     } else if (resolved.platform === 'win32' && resolved.winDesktopLnkPath && resolved.winStartMenuLnkPath) {
         const hasDesktopLnk = fs.existsSync(resolved.winDesktopLnkPath)
@@ -1113,10 +916,12 @@ export function inspectCdpLauncher(opts: CdpLauncherOptions = {}): CdpLauncherSt
         targetAppFound = Boolean(resolved.targetAppPath && fs.existsSync(resolved.targetAppPath));
     } else if (resolved.platform === 'linux' && resolved.linuxDesktopEntryPath && resolved.linuxWrapperPath) {
         installed = fs.existsSync(resolved.linuxDesktopEntryPath) && fs.existsSync(resolved.linuxWrapperPath);
-        if (resolved.targetAppPath && resolved.targetAppPath !== 'antigravity') {
+        const existsFn = opts.commandExistsFn ?? ((cmd: string) => defaultCommandExists(cmd, opts.env ?? process.env));
+        if (resolved.targetAppPath && resolved.targetAppPath.startsWith('flatpak:')) {
+            targetAppFound = existsFn('flatpak');
+        } else if (resolved.targetAppPath && resolved.targetAppPath !== 'antigravity') {
             targetAppFound = fs.existsSync(resolved.targetAppPath);
         } else {
-            const existsFn = opts.commandExistsFn ?? ((cmd: string) => defaultCommandExists(cmd, opts.env ?? process.env));
             targetAppFound = existsFn('antigravity');
         }
     }
@@ -1136,6 +941,8 @@ export function inspectCdpLauncher(opts: CdpLauncherOptions = {}): CdpLauncherSt
 }
 
 function writeMacOsBundleAt(appDir: string, targetAppPath: string, opts: CdpLauncherOptions): void {
+    assertSafeMacOsBundleWriteTarget(appDir);
+
     const contentsDir = path.join(appDir, 'Contents');
     const macOsDir = path.join(contentsDir, 'MacOS');
     const resourcesDir = path.join(contentsDir, 'Resources');
@@ -1160,17 +967,55 @@ function writeMacOsBundleAt(appDir: string, targetAppPath: string, opts: CdpLaun
     }
 }
 
+function resolveEffectiveLauncherOpts(opts: CdpLauncherOptions): {
+    effectiveOpts: CdpLauncherOptions;
+    resolved: ResolvedCdpLauncherPaths;
+} {
+    const platform = opts.platform ?? process.platform;
+    const env = opts.env ?? process.env;
+    const homeDir = resolveLauncherHomeDir(opts, platform);
+    const effectiveOpts: CdpLauncherOptions = platform === 'win32'
+        ? { ...opts, desktopDir: resolveWindowsDesktopDirForAction(opts, homeDir, env) }
+        : opts;
+    return { effectiveOpts, resolved: resolveCdpLauncherPaths(effectiveOpts) };
+}
+
+function cleanupEmptyDir(filePath: string | undefined): void {
+    if (!filePath) { return; }
+    const dir = dirnameTargetPath('win32', filePath);
+    try {
+        if (fs.existsSync(dir) && fs.readdirSync(dir).length === 0) {
+            fs.rmdirSync(dir);
+        }
+    } catch {
+        // Best-effort empty directory cleanup
+    }
+}
+
+function buildLauncherFailureResult(
+    resolved: ResolvedCdpLauncherPaths,
+    effectiveOpts: CdpLauncherOptions,
+    err: unknown,
+    verbEn: string,
+    verbZh: string,
+): CdpLauncherActionResult {
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    const status = inspectCdpLauncher(
+        resolved.winDesktopDir ? { ...effectiveOpts, desktopDir: resolved.winDesktopDir } : effectiveOpts,
+    );
+    return {
+        ok: false,
+        status,
+        messageEn: `Failed to ${verbEn} persistent CDP launcher: ${errorMsg}`,
+        messageZh: `${verbZh}持久化 CDP 启动器失败：${errorMsg}`,
+        error: errorMsg,
+    };
+}
+
 export function createCdpLauncher(opts: CdpLauncherOptions = {}): CdpLauncherActionResult {
-    const resolved = resolveCdpLauncherPaths(opts);
+    const { effectiveOpts, resolved } = resolveEffectiveLauncherOpts(opts);
     if (!resolved.supported) {
-        const status = inspectCdpLauncher(opts);
-        return {
-            ok: false,
-            status,
-            messageEn: `Persistent CDP launcher is not supported on ${resolved.platform}.`,
-            messageZh: `当前平台 ${resolved.platform} 不支持创建持久化 CDP 启动器。`,
-            error: `Unsupported platform: ${resolved.platform}`,
-        };
+        return buildUnsupportedLauncherResult(inspectCdpLauncher(effectiveOpts), 'create', '创建');
     }
 
     try {
@@ -1180,25 +1025,25 @@ export function createCdpLauncher(opts: CdpLauncherOptions = {}): CdpLauncherAct
             let createdDir = primaryDir;
 
             try {
-                writeMacOsBundleAt(primaryDir, resolved.targetAppPath, opts);
+                writeMacOsBundleAt(primaryDir, resolved.targetAppPath, effectiveOpts);
             } catch (err) {
                 const code = (err as NodeJS.ErrnoException)?.code;
                 const isPermError = code === 'EACCES' || code === 'EPERM' || code === 'EROFS';
                 if (isPermError && normalizePosixComparable(primaryDir) !== normalizePosixComparable(fallbackDir)) {
                     createdDir = fallbackDir;
-                    writeMacOsBundleAt(fallbackDir, resolved.targetAppPath, opts);
+                    writeMacOsBundleAt(fallbackDir, resolved.targetAppPath, effectiveOpts);
                 } else {
                     throw err;
                 }
             }
 
-            // Auto-remove stale `Antigravity (CDP).app` in the other candidate dir after creation succeeds
+            // Auto-remove stale `Antigravity (CDP).app` in the alternate candidate dir ONLY
+            // after verifying it is not a symlink and matches our exact CFBundleIdentifier.
             const createdNorm = normalizePosixComparable(createdDir);
             for (const candidate of resolved.macCandidateAppDirs ?? []) {
                 if (
                     normalizePosixComparable(candidate) !== createdNorm
-                    && path.basename(candidate) === MACOS_CDP_BUNDLE_NAME
-                    && fs.existsSync(candidate)
+                    && isOwnedMacCdpBundle(candidate)
                 ) {
                     try {
                         fs.rmSync(candidate, { recursive: true, force: true });
@@ -1208,7 +1053,7 @@ export function createCdpLauncher(opts: CdpLauncherOptions = {}): CdpLauncherAct
                 }
             }
 
-            const status = inspectCdpLauncher(opts);
+            const status = inspectCdpLauncher({ ...effectiveOpts, preferredMacAppDir: createdDir });
             return {
                 ok: true,
                 status,
@@ -1227,10 +1072,10 @@ export function createCdpLauncher(opts: CdpLauncherOptions = {}): CdpLauncherAct
                 }
             }
 
-            const runner = createDefaultRunner(opts.execFileSyncFn);
+            const runner = createDefaultRunner(effectiveOpts.execFileSyncFn);
             const targetExe = resolved.targetAppPath;
             const psEnv: NodeJS.ProcessEnv = {
-                ...(opts.env ?? process.env),
+                ...(effectiveOpts.env ?? process.env),
                 ACM_LNK_DESKTOP: resolved.winDesktopLnkPath,
                 ACM_LNK_STARTMENU: resolved.winStartMenuLnkPath,
                 ACM_TARGET_EXE: targetExe,
@@ -1259,18 +1104,9 @@ export function createCdpLauncher(opts: CdpLauncherOptions = {}): CdpLauncherAct
             }
 
             // If plugin data dir is empty (e.g. legacy .cmd removed and .ico fell back), tidy it up
-            if (resolved.winCmdPath) {
-                const dataDir = dirnameTargetPath('win32', resolved.winCmdPath);
-                try {
-                    if (fs.existsSync(dataDir) && fs.readdirSync(dataDir).length === 0) {
-                        fs.rmdirSync(dataDir);
-                    }
-                } catch {
-                    // ignore
-                }
-            }
+            cleanupEmptyDir(resolved.winCmdPath);
 
-            const status = inspectCdpLauncher({ ...opts, desktopDir: resolved.winDesktopDir });
+            const status = inspectCdpLauncher({ ...effectiveOpts, desktopDir: resolved.winDesktopDir });
             return {
                 ok: true,
                 status,
@@ -1290,7 +1126,12 @@ export function createCdpLauncher(opts: CdpLauncherOptions = {}): CdpLauncherAct
             }
 
             const iconWritten = resolved.linuxIconPath
-                ? writeLinuxBadgedIcon(resolved.linuxIconPath, resolved.homeDir, resolved.targetAppPath)
+                ? writeLinuxBadgedIcon(
+                    resolved.linuxIconPath,
+                    resolved.homeDir,
+                    resolved.targetAppPath,
+                    resolved.linuxXdgDataHome,
+                )
                 : false;
             const iconValue = iconWritten && resolved.linuxIconPath ? resolved.linuxIconPath : 'antigravity';
 
@@ -1300,9 +1141,9 @@ export function createCdpLauncher(opts: CdpLauncherOptions = {}): CdpLauncherAct
                 'utf8',
             );
 
-            runLinuxUpdateDesktopDatabase(applicationsDir, opts);
+            runLinuxUpdateDesktopDatabase(applicationsDir, effectiveOpts);
 
-            const status = inspectCdpLauncher(opts);
+            const status = inspectCdpLauncher(effectiveOpts);
             return {
                 ok: true,
                 status,
@@ -1311,7 +1152,7 @@ export function createCdpLauncher(opts: CdpLauncherOptions = {}): CdpLauncherAct
             };
         }
 
-        const status = inspectCdpLauncher(opts);
+        const status = inspectCdpLauncher(effectiveOpts);
         return {
             ok: false,
             status,
@@ -1320,142 +1161,372 @@ export function createCdpLauncher(opts: CdpLauncherOptions = {}): CdpLauncherAct
             error: 'Unresolved launcher paths',
         };
     } catch (err) {
-        const errorMsg = err instanceof Error ? err.message : String(err);
-        const status = inspectCdpLauncher(
-            resolved.winDesktopDir ? { ...opts, desktopDir: resolved.winDesktopDir } : opts,
-        );
-        return {
-            ok: false,
-            status,
-            messageEn: `Failed to create persistent CDP launcher: ${errorMsg}`,
-            messageZh: `创建持久化 CDP 启动器失败：${errorMsg}`,
-            error: errorMsg,
-        };
+        return buildLauncherFailureResult(resolved, effectiveOpts, err, 'create', '创建');
     }
 }
 
-export function revealCdpLauncher(opts: CdpLauncherOptions = {}): CdpLauncherActionResult {
-    const resolved = resolveCdpLauncherPaths(opts);
-    const status = inspectCdpLauncher(
-        resolved.winDesktopDir ? { ...opts, desktopDir: resolved.winDesktopDir } : opts,
-    );
-
-    if (!status.supported) {
-        return {
-            ok: false,
-            status,
-            messageEn: `Persistent CDP launcher is not supported on ${status.platform}.`,
-            messageZh: `当前平台 ${status.platform} 不支持定位持久化 CDP 启动器。`,
-            error: `Unsupported platform: ${status.platform}`,
-        };
-    }
-
-    if (!status.installed) {
-        return {
-            ok: false,
-            status,
-            messageEn: 'Persistent CDP launcher has not been created yet. Click "Create Persistent Launcher" first.',
-            messageZh: '尚未创建持久化 CDP 启动器，请先点击「一键生成持久化启动器」。',
-            error: 'Launcher not created yet',
-        };
-    }
-
-    const spawnFn = opts.spawnImpl
+function resolveRevealSpawnFn(opts: CdpLauncherOptions) {
+    return opts.spawnImpl
         ?? ((
             command: string,
             args: readonly string[],
-            options?: { detached?: boolean; stdio?: 'ignore'; windowsHide?: boolean },
+            options?: CdpLauncherSpawnOptions,
         ) => spawn(command, [...args], {
             detached: options?.detached ?? true,
             stdio: options?.stdio ?? 'ignore',
             windowsHide: options?.windowsHide ?? true,
+            ...(options?.shell !== undefined ? { shell: options.shell } : {}),
+            ...(options?.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
         }));
-    const spawnOpts = { detached: true, stdio: 'ignore' as const, windowsHide: true };
-    const launchDetached = (command: string, args: readonly string[]): void => {
-        const child = spawnFn(command, args, spawnOpts);
-        child?.on?.('error', () => { /* avoid unhandled error events on detached launcher helper */ });
-        child?.unref?.();
+}
+
+function resolveWindowsRevealTargets(
+    status: CdpLauncherStatus,
+    resolved: ResolvedCdpLauncherPaths,
+): { selectTarget: string; parentDir: string } {
+    const selectTarget = fs.existsSync(status.launcherPath)
+        ? status.launcherPath
+        : (resolved.winFallbackDesktopLnkPath && fs.existsSync(resolved.winFallbackDesktopLnkPath)
+            ? resolved.winFallbackDesktopLnkPath
+            : (resolved.winStartMenuLnkPath && fs.existsSync(resolved.winStartMenuLnkPath)
+                ? resolved.winStartMenuLnkPath
+                : ''));
+    const parentDir = dirnameTargetPath('win32', selectTarget || status.launcherPath);
+    return { selectTarget, parentDir };
+}
+
+function attachListener(
+    child: SpawnedLauncherProcessLike,
+    event: string,
+    listener: (...args: any[]) => void,
+    once = false,
+): void {
+    if (once && typeof child.once === 'function') {
+        child.once(event, listener);
+    } else if (typeof child.on === 'function') {
+        child.on(event, listener);
+    }
+}
+
+function detachListener(
+    child: SpawnedLauncherProcessLike,
+    event: string,
+    listener: (...args: any[]) => void,
+): void {
+    if (typeof child.off === 'function') {
+        child.off(event, listener);
+    } else if (typeof child.removeListener === 'function') {
+        child.removeListener(event, listener);
+    }
+}
+
+async function launchRevealProcessAndWait(
+    spawnFn: NonNullable<CdpLauncherOptions['spawnImpl']>,
+    command: string,
+    args: readonly string[],
+    options: CdpLauncherSpawnOptions,
+    waitOpts: { checkEarlyExit: boolean; settleMs: number; spawnTimeoutMs: number },
+): Promise<void> {
+    const child = spawnFn(command, args, options);
+    if (!child) {
+        throw new Error(`Failed to spawn reveal helper "${command}"`);
+    }
+
+    await new Promise<void>((resolvePromise, rejectPromise) => {
+        let settled = false;
+        let spawned = false;
+        let spawnTimer: ReturnType<typeof setTimeout> | null = null;
+        let settleTimer: ReturnType<typeof setTimeout> | null = null;
+
+        const cleanup = () => {
+            if (spawnTimer) { clearTimeout(spawnTimer); spawnTimer = null; }
+            if (settleTimer) { clearTimeout(settleTimer); settleTimer = null; }
+            detachListener(child, 'error', onError);
+            detachListener(child, 'spawn', onSpawn);
+            detachListener(child, 'exit', onExit);
+            // Keep a no-op error listener after settling to prevent unhandled post-settle EventEmitter errors
+            if (typeof child.on === 'function') {
+                child.on('error', () => { /* already settled */ });
+            }
+        };
+
+        const finishOk = () => {
+            if (settled) { return; }
+            settled = true;
+            cleanup();
+            child.unref?.();
+            resolvePromise();
+        };
+
+        const finishErr = (err: Error) => {
+            if (settled) { return; }
+            settled = true;
+            cleanup();
+            rejectPromise(err);
+        };
+
+        const onError = (err: unknown) => {
+            const errorObj = err instanceof Error ? err : new Error(String(err || `Failed to spawn "${command}"`));
+            finishErr(errorObj);
+        };
+
+        const onExit = (code: unknown, signal: unknown) => {
+            if (settled) { return; }
+            if (waitOpts.checkEarlyExit) {
+                if (code === 0 && !signal) {
+                    finishOk();
+                } else {
+                    const detail = signal ? `signal ${String(signal)}` : `exit code ${String(code ?? 'unknown')}`;
+                    finishErr(new Error(`Reveal helper "${command}" failed (${detail})`));
+                }
+            } else if (spawned) {
+                // On Windows, explorer.exe commonly exits with code 1 even on success when delegating
+                // to the running shell, so once 'spawn' succeeded do not treat exit code as failure.
+                finishOk();
+            }
+        };
+
+        const onSpawn = () => {
+            if (settled) { return; }
+            spawned = true;
+            if (spawnTimer) { clearTimeout(spawnTimer); spawnTimer = null; }
+            if (!waitOpts.checkEarlyExit || waitOpts.settleMs <= 0) {
+                finishOk();
+                return;
+            }
+            settleTimer = setTimeout(() => {
+                finishOk();
+            }, waitOpts.settleMs);
+            settleTimer.unref?.();
+        };
+
+        attachListener(child, 'error', onError, true);
+        attachListener(child, 'spawn', onSpawn, true);
+        attachListener(child, 'exit', onExit, true);
+
+        if (settled) { return; }
+
+        spawnTimer = setTimeout(() => {
+            finishErr(new Error(`Timed out waiting for reveal helper "${command}" to spawn`));
+        }, waitOpts.spawnTimeoutMs);
+        spawnTimer.unref?.();
+    });
+}
+
+function buildUnsupportedLauncherResult(
+    status: CdpLauncherStatus,
+    actionEn: string,
+    actionZh: string,
+): CdpLauncherActionResult {
+    return {
+        ok: false,
+        status,
+        messageEn: `Persistent CDP launcher is not supported on ${status.platform}.`,
+        messageZh: `当前平台 ${status.platform} 不支持${actionZh}持久化 CDP 启动器。`,
+        error: `Unsupported platform: ${status.platform}`,
+    };
+}
+
+function resolveRevealTargetAndOutcome(
+    opts: CdpLauncherOptions,
+): { status: CdpLauncherStatus; resolved: ResolvedCdpLauncherPaths; earlyError?: CdpLauncherActionResult } {
+    const resolved = resolveCdpLauncherPaths(opts);
+    const status = inspectCdpLauncher(
+        resolved.winDesktopDir ? { ...opts, desktopDir: resolved.winDesktopDir } : opts,
+    );
+    if (!status.supported) {
+        return { status, resolved, earlyError: buildUnsupportedLauncherResult(status, 'reveal', '定位') };
+    }
+    if (!status.installed) {
+        return {
+            status,
+            resolved,
+            earlyError: {
+                ok: false,
+                status,
+                messageEn: 'Persistent CDP launcher has not been created yet. Click "Create Persistent Launcher" first.',
+                messageZh: '尚未创建持久化 CDP 启动器，请先点击「一键生成持久化启动器」。',
+                error: 'Launcher not created yet',
+            },
+        };
+    }
+    return { status, resolved };
+}
+
+function buildRevealSuccessResult(status: CdpLauncherStatus, target: string): CdpLauncherActionResult {
+    if (status.platform === 'darwin') {
+        return {
+            ok: true,
+            status,
+            messageEn: `Revealed "${target}" in Finder. Drag "Antigravity (CDP).app" from Finder into your Dock — NEVER right-click the running Antigravity icon to choose "Keep in Dock".`,
+            messageZh: `已在访达中定位「${target}」。请直接从访达拖入程序坞固定——切勿右键运行中的图标选「在程序坞中保留」。`,
+        };
+    }
+    if (status.platform === 'win32') {
+        return {
+            ok: true,
+            status,
+            messageEn: `Opened Explorer at "${target}". Launch "Antigravity (CDP)" (or right-click it -> Pin to taskbar) to keep CDP enabled.`,
+            messageZh: `已在资源管理器中定位「${target}」。请从该「Antigravity (CDP)」快捷方式启动（或右键「固定到任务栏」）。`,
+        };
+    }
+    return {
+        ok: true,
+        status,
+        messageEn: `Opened launcher folder "${target}". Launch or pin "Antigravity (CDP)" from Show Apps / Application Launcher (not the running Dock icon).`,
+        messageZh: `已打开启动器目录「${target}」。请从「显示应用」菜单启动或固定「Antigravity (CDP)」（勿右键运行中的窗口图标固定）。`,
+    };
+}
+
+function buildRevealFailureResult(status: CdpLauncherStatus, err: unknown): CdpLauncherActionResult {
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    return {
+        ok: false,
+        status,
+        messageEn: `Failed to reveal persistent CDP launcher: ${errorMsg}`,
+        messageZh: `无法打开持久化 CDP 启动器位置：${errorMsg}`,
+        error: errorMsg,
+    };
+}
+
+/**
+ * Asynchronous reveal helper that waits for the actual child-process spawn outcome
+ * (`'spawn'` vs async `'error'`, plus early non-zero exit verification for `xdg-open`
+ * and `open`) so failed spawns NEVER return false success.
+ */
+export async function revealCdpLauncherAsync(opts: CdpLauncherOptions = {}): Promise<CdpLauncherActionResult> {
+    const { status, resolved, earlyError } = resolveRevealTargetAndOutcome(opts);
+    if (earlyError) { return earlyError; }
+
+    const spawnFn = resolveRevealSpawnFn(opts);
+    const defaultSpawnOpts: CdpLauncherSpawnOptions = { detached: true, stdio: 'ignore', windowsHide: true };
+    const settleMs = typeof opts.revealSettleMs === 'number' ? Math.max(0, opts.revealSettleMs) : 150;
+    const spawnTimeoutMs = typeof opts.revealSpawnTimeoutMs === 'number' ? Math.max(50, opts.revealSpawnTimeoutMs) : 3_000;
+
+    try {
+        if (status.platform === 'darwin') {
+            await launchRevealProcessAndWait(spawnFn, 'open', ['-R', status.launcherPath], defaultSpawnOpts, {
+                checkEarlyExit: true,
+                settleMs,
+                spawnTimeoutMs,
+            });
+            return buildRevealSuccessResult(status, status.launcherPath);
+        }
+
+        if (status.platform === 'win32') {
+            const { selectTarget, parentDir } = resolveWindowsRevealTargets(status, resolved);
+            let revealedTarget = selectTarget || parentDir;
+            const winWait = { checkEarlyExit: false, settleMs: 0, spawnTimeoutMs };
+            if (selectTarget) {
+                try {
+                    const selectSpec = buildWindowsExplorerRevealCommand(selectTarget, false);
+                    await launchRevealProcessAndWait(spawnFn, selectSpec.cmd, selectSpec.args, selectSpec.options, winWait);
+                } catch {
+                    const dirSpec = buildWindowsExplorerRevealCommand(parentDir, true);
+                    await launchRevealProcessAndWait(spawnFn, dirSpec.cmd, dirSpec.args, dirSpec.options, winWait);
+                    revealedTarget = parentDir;
+                }
+            } else {
+                const dirSpec = buildWindowsExplorerRevealCommand(parentDir, true);
+                await launchRevealProcessAndWait(spawnFn, dirSpec.cmd, dirSpec.args, dirSpec.options, winWait);
+            }
+            return buildRevealSuccessResult(status, revealedTarget);
+        }
+
+        if (status.platform === 'linux') {
+            const folderPath = dirnameTargetPath('linux', status.launcherPath);
+            await launchRevealProcessAndWait(spawnFn, 'xdg-open', [folderPath], defaultSpawnOpts, {
+                checkEarlyExit: true,
+                settleMs,
+                spawnTimeoutMs,
+            });
+            return buildRevealSuccessResult(status, folderPath);
+        }
+
+        return buildUnsupportedLauncherResult(status, 'reveal', '定位');
+    } catch (err) {
+        return buildRevealFailureResult(status, err);
+    }
+}
+
+export function revealCdpLauncher(opts: CdpLauncherOptions = {}): CdpLauncherActionResult {
+    const { status, resolved, earlyError } = resolveRevealTargetAndOutcome(opts);
+    if (earlyError) { return earlyError; }
+
+    const usingDefaultSpawn = !opts.spawnImpl;
+    const spawnFn = resolveRevealSpawnFn(opts);
+    const defaultSpawnOpts: CdpLauncherSpawnOptions = { detached: true, stdio: 'ignore', windowsHide: true };
+    const launchDetached = (
+        command: string,
+        args: readonly string[],
+        options: CdpLauncherSpawnOptions = defaultSpawnOpts,
+    ): void => {
+        if (usingDefaultSpawn && status.platform === 'linux') {
+            const existsFn = opts.commandExistsFn ?? ((cmd: string) => defaultCommandExists(cmd, opts.env ?? process.env));
+            if (!existsFn(command)) {
+                throw new Error(`Reveal helper "${command}" was not found on PATH`);
+            }
+        }
+        const child = spawnFn(command, args, options);
+        if (!child) {
+            throw new Error(`Failed to spawn reveal helper "${command}"`);
+        }
+        let syncError: Error | null = null;
+        child.on?.('error', (err: unknown) => {
+            syncError = err instanceof Error ? err : new Error(String(err || `Failed to spawn "${command}"`));
+        });
+        if (syncError) {
+            throw syncError;
+        }
+        // In Node.js, failed OS spawn (e.g. ENOENT/EACCES) leaves `child.pid === undefined` synchronously
+        // before emitting the async 'error' event — fail honestly instead of reporting false success.
+        if ((usingDefaultSpawn || 'pid' in child) && (typeof child.pid !== 'number' || child.pid <= 0)) {
+            throw new Error(`Failed to spawn reveal helper "${command}" (no process ID assigned)`);
+        }
+        child.unref?.();
     };
 
     try {
         if (status.platform === 'darwin') {
             launchDetached('open', ['-R', status.launcherPath]);
-            return {
-                ok: true,
-                status,
-                messageEn: `Revealed "${status.launcherPath}" in Finder. Drag "Antigravity (CDP).app" from Finder into your Dock — NEVER right-click the running Antigravity icon to choose "Keep in Dock".`,
-                messageZh: `已在访达中定位「${status.launcherPath}」。请直接从访达拖入程序坞固定——切勿右键运行中的图标选「在程序坞中保留」。`,
-            };
+            return buildRevealSuccessResult(status, status.launcherPath);
         }
 
         if (status.platform === 'win32') {
-            const selectTarget = fs.existsSync(status.launcherPath)
-                ? status.launcherPath
-                : (resolved.winFallbackDesktopLnkPath && fs.existsSync(resolved.winFallbackDesktopLnkPath)
-                    ? resolved.winFallbackDesktopLnkPath
-                    : (resolved.winStartMenuLnkPath && fs.existsSync(resolved.winStartMenuLnkPath)
-                        ? resolved.winStartMenuLnkPath
-                        : ''));
-            const parentDir = dirnameTargetPath('win32', selectTarget || status.launcherPath);
+            const { selectTarget, parentDir } = resolveWindowsRevealTargets(status, resolved);
+            let revealedTarget = selectTarget || parentDir;
             if (selectTarget) {
                 try {
-                    launchDetached('explorer.exe', [`/select,${selectTarget}`]);
+                    const selectSpec = buildWindowsExplorerRevealCommand(selectTarget, false);
+                    launchDetached(selectSpec.cmd, selectSpec.args, selectSpec.options);
                 } catch {
-                    launchDetached('explorer.exe', [parentDir]);
+                    const dirSpec = buildWindowsExplorerRevealCommand(parentDir, true);
+                    launchDetached(dirSpec.cmd, dirSpec.args, dirSpec.options);
+                    revealedTarget = parentDir;
                 }
             } else {
-                launchDetached('explorer.exe', [parentDir]);
+                const dirSpec = buildWindowsExplorerRevealCommand(parentDir, true);
+                launchDetached(dirSpec.cmd, dirSpec.args, dirSpec.options);
             }
-            const revealedTarget = selectTarget || parentDir;
-            return {
-                ok: true,
-                status,
-                messageEn: `Opened Explorer at "${revealedTarget}". Launch "Antigravity (CDP)" (or right-click it -> Pin to taskbar) to keep CDP enabled.`,
-                messageZh: `已在资源管理器中定位「${revealedTarget}」。请从该「Antigravity (CDP)」快捷方式启动（或右键「固定到任务栏」）。`,
-            };
+            return buildRevealSuccessResult(status, revealedTarget);
         }
 
         if (status.platform === 'linux') {
             const folderPath = dirnameTargetPath('linux', status.launcherPath);
             launchDetached('xdg-open', [folderPath]);
-            return {
-                ok: true,
-                status,
-                messageEn: `Opened launcher folder "${folderPath}". Launch or pin "Antigravity (CDP)" from Show Apps / Application Launcher (not the running Dock icon).`,
-                messageZh: `已打开启动器目录「${folderPath}」。请从「显示应用」菜单启动或固定「Antigravity (CDP)」（勿右键运行中的窗口图标固定）。`,
-            };
+            return buildRevealSuccessResult(status, folderPath);
         }
 
-        return {
-            ok: false,
-            status,
-            messageEn: `Persistent CDP launcher is not supported on ${status.platform}.`,
-            messageZh: `当前平台 ${status.platform} 不支持定位持久化 CDP 启动器。`,
-            error: `Unsupported platform: ${status.platform}`,
-        };
+        return buildUnsupportedLauncherResult(status, 'reveal', '定位');
     } catch (err) {
-        const errorMsg = err instanceof Error ? err.message : String(err);
-        return {
-            ok: false,
-            status,
-            messageEn: `Failed to reveal persistent CDP launcher: ${errorMsg}`,
-            messageZh: `无法打开持久化 CDP 启动器位置：${errorMsg}`,
-            error: errorMsg,
-        };
+        return buildRevealFailureResult(status, err);
     }
 }
 
 export function removeCdpLauncher(opts: CdpLauncherOptions = {}): CdpLauncherActionResult {
-    const resolved = resolveCdpLauncherPaths(opts);
+    const { effectiveOpts, resolved } = resolveEffectiveLauncherOpts(opts);
     if (!resolved.supported) {
-        const status = inspectCdpLauncher(opts);
-        return {
-            ok: false,
-            status,
-            messageEn: `Persistent CDP launcher is not supported on ${resolved.platform}.`,
-            messageZh: `当前平台 ${resolved.platform} 不支持移除持久化 CDP 启动器。`,
-            error: `Unsupported platform: ${resolved.platform}`,
-        };
+        return buildUnsupportedLauncherResult(inspectCdpLauncher(effectiveOpts), 'remove', '移除');
     }
 
     try {
@@ -1467,10 +1538,11 @@ export function removeCdpLauncher(opts: CdpLauncherOptions = {}): CdpLauncherAct
         };
 
         if (resolved.platform === 'darwin') {
-            // Safety invariant: ONLY remove our own `Antigravity (CDP).app`, NEVER `/Applications/Antigravity.app`
+            // Safety invariant: ONLY remove a non-symlink `Antigravity (CDP).app`
+            // matching our exact CFBundleIdentifier — NEVER foreign apps or symlinks!
             const candidates = resolved.macCandidateAppDirs ?? (resolved.macAppDir ? [resolved.macAppDir] : []);
             for (const candidate of candidates) {
-                if (path.basename(candidate) === MACOS_CDP_BUNDLE_NAME) {
+                if (isOwnedMacCdpBundle(candidate)) {
                     removeIfPresent(candidate, true);
                 }
             }
@@ -1485,27 +1557,18 @@ export function removeCdpLauncher(opts: CdpLauncherOptions = {}): CdpLauncherAct
             removeIfPresent(resolved.winStartMenuLnkPath, false);
             removeIfPresent(resolved.winIconPath, false);
             removeIfPresent(resolved.winCmdPath, false);
-            if (resolved.winCmdPath) {
-                const wrapperDir = dirnameTargetPath('win32', resolved.winCmdPath);
-                try {
-                    if (fs.existsSync(wrapperDir) && fs.readdirSync(wrapperDir).length === 0) {
-                        fs.rmdirSync(wrapperDir);
-                    }
-                } catch {
-                    // Best-effort empty directory cleanup
-                }
-            }
+            cleanupEmptyDir(resolved.winCmdPath);
         } else if (resolved.platform === 'linux') {
             removeIfPresent(resolved.linuxDesktopEntryPath, false);
             removeIfPresent(resolved.linuxWrapperPath, false);
             removeIfPresent(resolved.linuxIconPath, false);
             if (resolved.linuxDesktopEntryPath) {
-                runLinuxUpdateDesktopDatabase(path.dirname(resolved.linuxDesktopEntryPath), opts);
+                runLinuxUpdateDesktopDatabase(path.dirname(resolved.linuxDesktopEntryPath), effectiveOpts);
             }
         }
 
         const status = inspectCdpLauncher(
-            resolved.winDesktopDir ? { ...opts, desktopDir: resolved.winDesktopDir } : opts,
+            resolved.winDesktopDir ? { ...effectiveOpts, desktopDir: resolved.winDesktopDir } : effectiveOpts,
         );
         return {
             ok: true,
@@ -1518,16 +1581,6 @@ export function removeCdpLauncher(opts: CdpLauncherOptions = {}): CdpLauncherAct
                 : `未检测到已安装的持久化 CDP 启动器（${resolved.launcherPath}）。`,
         };
     } catch (err) {
-        const errorMsg = err instanceof Error ? err.message : String(err);
-        const status = inspectCdpLauncher(
-            resolved.winDesktopDir ? { ...opts, desktopDir: resolved.winDesktopDir } : opts,
-        );
-        return {
-            ok: false,
-            status,
-            messageEn: `Failed to remove persistent CDP launcher: ${errorMsg}`,
-            messageZh: `移除持久化 CDP 启动器失败：${errorMsg}`,
-            error: errorMsg,
-        };
+        return buildLauncherFailureResult(resolved, effectiveOpts, err, 'remove', '移除');
     }
 }

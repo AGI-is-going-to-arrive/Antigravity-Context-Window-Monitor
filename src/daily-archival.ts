@@ -6,28 +6,46 @@ import type { ActivityTracker } from './activity-tracker';
 import type { GMTracker, GMSummary, GMModelStats } from './gm-tracker';
 import {
     buildGMPerModelStats,
+    collectCycleRecordedCallIds,
     computeAdditiveTokens,
     getCycleSurfaces,
     type DailyCycleEntry,
+    type DailyMergedLateCall,
     type DailyRecord,
     type DailyStore,
 } from './daily-store';
-import type { PricingStore, ModelPricing } from './pricing-store';
-import { calculateLedgerModelCosts, calculateUsageCosts, samePricingModel, selectPricingModel } from './pricing-store';
+import type { PricingStore, ModelPricing, OrchestratorPricingMode } from './pricing-store';
+import {
+    calculateLedgerModelCosts,
+    calculateUsageCosts,
+    getOrchestratorPricingMode,
+    resolvePricingDetail,
+    samePricingModel,
+    selectPricingModel,
+} from './pricing-store';
 import type { PersistedModelDNA } from './model-dna-store';
 import { mergeModelDNAState } from './model-dna-store';
 import {
+    UNATTRIBUTED_WORKSPACE_KEY,
+    aggregateWorkspaceLeaderboard,
+    canonicalLogicalCallId,
     cloneSurfaceBreakdown,
+    cloneWorkspaceBreakdown,
     dominantUsageSurface,
     normalizeUsageSurface,
+    normalizeWorkspaceKey,
     type DailyLedger,
     type LedgerAccountBucket,
+    type LedgerRecordedCall,
     type LedgerDayData,
     type LedgerModelTelemetry,
     type LedgerSettledEntry,
     type SurfaceUsageStats,
     type UsageSurface,
+    type WorkspaceUsageStats,
 } from './daily-ledger';
+
+export { UNATTRIBUTED_WORKSPACE_KEY, aggregateWorkspaceLeaderboard };
 
 // ─── Utility ─────────────────────────────────────────────────────────────────
 
@@ -55,9 +73,14 @@ export interface DailyArchivalContext {
     dailyLedger: DailyLedger | null;
     /** Optional origin surface ('app' | 'ide' | 'cli' | 'unknown') for source tagging */
     surface?: UsageSurface;
+    /** Optional pre-archival flush callback (sync or async, e.g. final GM fetch & flush into DailyLedger right before rollover). */
+    preArchivalFlush?: () => void | Promise<void>;
+    /** Optional persistence confirmation hook (e.g. `() => durableState.flush().then(r => r.committed)`).
+     *  When provided to async archival/late-day flush, late queues are drained ONLY after this confirms true. */
+    confirmPersist?: () => boolean | Promise<boolean>;
 
     /** Write-back: called when state needs persisting. */
-    persist: (updates: DailyArchivalPersistUpdates) => void;
+    persist: (updates: DailyArchivalPersistUpdates) => void | Promise<void>;
     /** Logging callback. */
     log: (msg: string) => void;
 }
@@ -94,31 +117,78 @@ export interface DailyArchivalResult {
  * @param force If true, skip date-change check (for dev simulation).
  * @param now  The current date (injectable for testing).
  */
-export function performDailyArchival(
+function sweepUnrecordedGMCallsForArchiveDate(
     ctx: DailyArchivalContext,
-    force = false,
-    now: Date = new Date(),
-): DailyArchivalResult {
-    const todayKey = toLocalDateKey(now);
-
-    if (!force) {
-        if (!ctx.lastArchivalDateKey) {
-            // First run ever — record today, don't archive
-            ctx.persist({
-                lastArchivalDateKey: todayKey,
-                lastGMSummary: ctx.lastGMSummary,
-                modelDNAChanged: false,
-            });
-            return { archived: false, archiveDateKey: todayKey, firstRun: true, sameDay: false };
+    archiveDateKey: string,
+    force: boolean,
+): void {
+    if (force || !ctx.dailyLedger || ctx.dailyLedger.dateKey !== archiveDateKey) {
+        return;
+    }
+    const gmAny = ctx.gmTracker as {
+        getNewCallsSinceLastRecord?: GMTracker['getNewCallsSinceLastRecord'];
+        markLedgerEntriesRecorded?: GMTracker['markLedgerEntriesRecorded'];
+    };
+    if (typeof gmAny.getNewCallsSinceLastRecord !== 'function') {
+        return;
+    }
+    try {
+        // Use getNewCallsSinceLastRecord() so first-start baselined calls are NEVER rescanned!
+        const { entries: newEntries, revertedCascadeIds } = gmAny.getNewCallsSinceLastRecord.call(ctx.gmTracker);
+        for (const cid of revertedCascadeIds) {
+            ctx.dailyLedger.clearRecordedIdsForConversation(cid);
         }
-        if (ctx.lastArchivalDateKey === todayKey) {
-            return { archived: false, archiveDateKey: todayKey, firstRun: false, sameDay: true };
+        const matchingArchiveEntries = newEntries.filter((entry) => {
+            if (!entry.call.createdAt) { return false; }
+            const ts = Date.parse(entry.call.createdAt);
+            return !Number.isNaN(ts) && toLocalDateKey(new Date(ts)) === archiveDateKey;
+        });
+        if (matchingArchiveEntries.length > 0) {
+            const detailed = ctx.dailyLedger.recordCallsDetailed(matchingArchiveEntries, ctx.surface);
+            if (typeof gmAny.markLedgerEntriesRecorded === 'function') {
+                gmAny.markLedgerEntriesRecorded.call(ctx.gmTracker, matchingArchiveEntries, detailed.statuses);
+            }
+            if (detailed.added > 0) {
+                ctx.log(`Daily archival pre-flush swept ${detailed.added} late GM call(s) into ${archiveDateKey}`);
+            }
+        }
+    } catch {
+        // Non-critical pre-archival sweep
+    }
+}
+
+function collectDayDataRecordedCallIds(dayData: LedgerDayData): string[] {
+    const ids = new Set<string>();
+    for (const bucket of Object.values(dayData.accounts)) {
+        for (const id of bucket.recordedCallIds || []) {
+            if (id) { ids.add(canonicalLogicalCallId(id)); }
+        }
+        for (const call of bucket.recordedCalls || []) {
+            if (call.callId) { ids.add(canonicalLogicalCallId(call.callId)); }
         }
     }
+    for (const settled of dayData.settled || []) {
+        for (const id of settled.recordedCallIds || []) {
+            if (id) { ids.add(canonicalLogicalCallId(id)); }
+        }
+        for (const call of settled.settledCalls || []) {
+            if (call.callId) { ids.add(canonicalLogicalCallId(call.callId)); }
+        }
+    }
+    return [...ids];
+}
 
-    // ── Date rolled over → archive yesterday's data ──
-    const archiveDateKey = force ? todayKey : ctx.lastArchivalDateKey;
-    ctx.log(`Daily archival triggered: ${archiveDateKey} → ${todayKey}`);
+function executeDailyArchivalBody(
+    ctx: DailyArchivalContext,
+    archiveDateKey: string,
+    todayKey: string,
+    force: boolean,
+): {
+    archived: boolean;
+    persistUpdates: DailyArchivalPersistUpdates;
+} {
+    // 0b. Sweep any unrecorded post-baseline GM calls matching archiveDateKey right before rollover
+    sweepUnrecordedGMCallsForArchiveDate(ctx, archiveDateKey, force);
 
     // 1. Snapshot Activity
     const activitySummary = ctx.activityTracker.getSummary();
@@ -131,7 +201,10 @@ export function performDailyArchival(
     let costPerModel: Record<string, number> | undefined;
     let resolvedSurface: UsageSurface | undefined = ctx.surface ? normalizeUsageSurface(ctx.surface) : undefined;
     let resolvedSurfaceBreakdown: Partial<Record<UsageSurface, SurfaceUsageStats>> | undefined;
+    let resolvedWorkspaceBreakdown: Record<string, WorkspaceUsageStats> | undefined;
     let resolvedAccountEmail: string | undefined;
+    let recordedCallIds: string[] | undefined;
+    let snapshotCalls: DailyMergedLateCall[] | undefined;
 
     if (ctx.dailyLedger && !ctx.dailyLedger.hasData) {
         const previousLedgerDateKey = ctx.dailyLedger.dateKey;
@@ -143,12 +216,15 @@ export function performDailyArchival(
     if (ctx.dailyLedger && ctx.dailyLedger.hasData) {
         // ── New path: DailyLedger is the source of truth ──
         const dayData = ctx.dailyLedger.rollover(archiveDateKey);
+        recordedCallIds = collectDayDataRecordedCallIds(dayData);
+        snapshotCalls = buildLateMergedCallsFromDayData(dayData, ctx.pricingStore?.getCustom(), ctx.surface, ctx.dailyLedger.surface).calls;
         const result = buildGMSummaryFromLedger(dayData, ctx.pricingStore?.getCustom());
         gmSummary = result.summary;
         costTotal = result.totalCost > 0 ? result.totalCost : undefined;
         costPerModel = result.costPerModel;
         resolvedSurface = result.surface ?? resolvedSurface ?? (ctx.dailyLedger.surface !== 'unknown' ? ctx.dailyLedger.surface : undefined);
         resolvedSurfaceBreakdown = result.surfaceBreakdown;
+        resolvedWorkspaceBreakdown = result.workspaceBreakdown;
         const distinctEmails = new Set<string>();
         for (const email of Object.keys(dayData.accounts)) {
             if (email) { distinctEmails.add(email); }
@@ -168,12 +244,6 @@ export function performDailyArchival(
     const hasGM = !!(gmSummary && gmSummary.totalCalls > 0);
 
     // 3. Calculate cost (only if ledger didn't provide it)
-    //
-    // Keyed by the RAW breakdown key, because that is what buildGMPerModelStats looks the cost up
-    // under. `calculateCosts` cannot be used here: it labels its rows with the normalized display
-    // name and merges variants onto one base name, so whenever a raw key differs from its display
-    // name every per-model row was archived with no cost while the day total still held the full
-    // amount — an inconsistency the cost backfill later read as "unpriced" and added a second time.
     if (costTotal === undefined && gmSummary && ctx.pricingStore) {
         const custom = ctx.pricingStore.getCustom();
         const perModel: Record<string, number> = {};
@@ -198,11 +268,16 @@ export function performDailyArchival(
     if ((hasActivity || hasGM) && ctx.dailyStore) {
         const meta = (resolvedSurface && resolvedSurface !== 'unknown')
             || resolvedSurfaceBreakdown
+            || resolvedWorkspaceBreakdown
             || resolvedAccountEmail
+            || (recordedCallIds && recordedCallIds.length > 0)
             ? {
                 ...(resolvedSurface && resolvedSurface !== 'unknown' ? { surface: resolvedSurface } : {}),
                 ...(resolvedSurfaceBreakdown ? { surfaceBreakdown: resolvedSurfaceBreakdown } : {}),
+                ...(resolvedWorkspaceBreakdown ? { workspaceBreakdown: resolvedWorkspaceBreakdown } : {}),
                 ...(resolvedAccountEmail ? { accountEmail: resolvedAccountEmail } : {}),
+                ...(recordedCallIds && recordedCallIds.length > 0 ? { recordedCallIds } : {}),
+                ...(snapshotCalls?.length ? { snapshotCalls } : {}),
             }
             : undefined;
         ctx.dailyStore.addDailySnapshot(
@@ -235,40 +310,429 @@ export function performDailyArchival(
     ctx.gmTracker.reset();
     const newGMSummary = ctx.gmTracker.getDetailedSummary() || ctx.gmTracker.getCachedSummary();
 
+    return {
+        archived: hasActivity || !!hasGM,
+        persistUpdates: {
+            lastArchivalDateKey: todayKey,
+            lastGMSummary: newGMSummary,
+            persistedModelDNA: modelDNAChanged ? updatedDNA : undefined,
+            modelDNAChanged,
+        },
+    };
+}
+
+/**
+ * Perform daily archival synchronously (backward-compatible entrypoint).
+ * Prefer {@link performDailyArchivalAsync} when `preArchivalFlush` or `confirmPersist` is async.
+ */
+export function performDailyArchival(
+    ctx: DailyArchivalContext,
+    force = false,
+    now: Date = new Date(),
+): DailyArchivalResult {
+    const todayKey = toLocalDateKey(now);
+
+    if (!force) {
+        if (!ctx.lastArchivalDateKey) {
+            ctx.persist({
+                lastArchivalDateKey: todayKey,
+                lastGMSummary: ctx.lastGMSummary,
+                modelDNAChanged: false,
+            });
+            return { archived: false, archiveDateKey: todayKey, firstRun: true, sameDay: false };
+        }
+        if (ctx.lastArchivalDateKey === todayKey) {
+            if (ctx.dailyLedger && ctx.dailyStore && typeof ctx.dailyLedger.getLateDaySnapshots === 'function'
+                && ctx.dailyLedger.getLateDaySnapshots().length > 0) {
+                flushLateDaysToDailyStore(
+                    ctx.dailyLedger,
+                    ctx.dailyStore,
+                    ctx.pricingStore?.getCustom(),
+                    ctx.surface,
+                    ctx.log,
+                );
+            }
+            return { archived: false, archiveDateKey: todayKey, firstRun: false, sameDay: true };
+        }
+    }
+
+    // ── Date rolled over → archive yesterday's data ──
+    const archiveDateKey = force ? todayKey : ctx.lastArchivalDateKey;
+    ctx.log(`Daily archival triggered: ${archiveDateKey} → ${todayKey}`);
+
+    if (ctx.preArchivalFlush) {
+        try {
+            ctx.preArchivalFlush();
+        } catch (err) {
+            ctx.log(`Daily archival pre-flush hook failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+    }
+
+    const { archived, persistUpdates } = executeDailyArchivalBody(ctx, archiveDateKey, todayKey, force);
+
+    // 4b. Idempotently merge any pending late-arriving cross-midnight buckets into their true local dates
+    let lateFlushed = 0;
+    if (ctx.dailyLedger && ctx.dailyStore && typeof ctx.dailyLedger.getLateDaySnapshots === 'function'
+        && ctx.dailyLedger.getLateDaySnapshots().length > 0) {
+        lateFlushed = flushLateDaysToDailyStore(
+            ctx.dailyLedger,
+            ctx.dailyStore,
+            ctx.pricingStore?.getCustom(),
+            ctx.surface,
+            ctx.log,
+        );
+    }
+
     // 7. Persist everything
-    ctx.persist({
-        lastArchivalDateKey: todayKey,
-        lastGMSummary: newGMSummary,
-        persistedModelDNA: modelDNAChanged ? updatedDNA : undefined,
-        modelDNAChanged,
-    });
+    ctx.persist(persistUpdates);
 
     ctx.log(`Daily archival completed for ${archiveDateKey}`);
-    return { archived: hasActivity || !!hasGM, archiveDateKey, firstRun: false, sameDay: false };
+    return { archived: archived || lateFlushed > 0, archiveDateKey, firstRun: false, sameDay: false };
+}
+
+/**
+ * Asynchronous daily archival that awaits `ctx.preArchivalFlush()` (so an async GM fetch/flush
+ * completes cleanly BEFORE rollover), awaits idempotent late-day persistence before draining
+ * pending late queues, and awaits `ctx.persist(...)`.
+ */
+export async function performDailyArchivalAsync(
+    ctx: DailyArchivalContext,
+    force = false,
+    now: Date = new Date(),
+): Promise<DailyArchivalResult> {
+    const todayKey = toLocalDateKey(now);
+
+    if (!force) {
+        if (!ctx.lastArchivalDateKey) {
+            await ctx.persist({
+                lastArchivalDateKey: todayKey,
+                lastGMSummary: ctx.lastGMSummary,
+                modelDNAChanged: false,
+            });
+            return { archived: false, archiveDateKey: todayKey, firstRun: true, sameDay: false };
+        }
+        if (ctx.lastArchivalDateKey === todayKey) {
+            if (ctx.dailyLedger && ctx.dailyStore && typeof ctx.dailyLedger.getLateDaySnapshots === 'function'
+                && ctx.dailyLedger.getLateDaySnapshots().length > 0) {
+                await flushLateDaysToDailyStoreAsync(
+                    ctx.dailyLedger,
+                    ctx.dailyStore,
+                    ctx.pricingStore?.getCustom(),
+                    ctx.surface,
+                    ctx.log,
+                    undefined,
+                    ctx.confirmPersist,
+                );
+            }
+            return { archived: false, archiveDateKey: todayKey, firstRun: false, sameDay: true };
+        }
+    }
+
+    // ── Date rolled over → await async pre-archival flush BEFORE sweeping & rolling over ──
+    const archiveDateKey = force ? todayKey : ctx.lastArchivalDateKey;
+    ctx.log(`Daily archival triggered: ${archiveDateKey} → ${todayKey}`);
+
+    if (ctx.preArchivalFlush) {
+        try {
+            await ctx.preArchivalFlush();
+        } catch (err) {
+            ctx.log(`Daily archival pre-flush hook failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+    }
+
+    const { archived, persistUpdates } = executeDailyArchivalBody(ctx, archiveDateKey, todayKey, force);
+
+    // 4b. Idempotently merge & confirm-persist pending late-arriving cross-midnight buckets
+    let lateFlushed = 0;
+    if (ctx.dailyLedger && ctx.dailyStore && typeof ctx.dailyLedger.getLateDaySnapshots === 'function'
+        && ctx.dailyLedger.getLateDaySnapshots().length > 0) {
+        lateFlushed = await flushLateDaysToDailyStoreAsync(
+            ctx.dailyLedger,
+            ctx.dailyStore,
+            ctx.pricingStore?.getCustom(),
+            ctx.surface,
+            ctx.log,
+            undefined,
+            ctx.confirmPersist,
+        );
+    }
+
+    // 7. Persist everything
+    await ctx.persist(persistUpdates);
+
+    ctx.log(`Daily archival completed for ${archiveDateKey}`);
+    return { archived: archived || lateFlushed > 0, archiveDateKey, firstRun: false, sameDay: false };
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
+function buildLateMergedCallsFromDayData(
+    dayData: LedgerDayData,
+    customPricing?: Record<string, ModelPricing>,
+    defaultSurface?: UsageSurface,
+    ledgerSurface?: UsageSurface,
+    orchestratorPricingMode?: OrchestratorPricingMode,
+): {
+    calls: DailyMergedLateCall[];
+    rawCallIds: string[];
+    accountEmail?: string;
+    resolvedSurface?: UsageSurface;
+} {
+    const custom = customPricing || {};
+    const mode = orchestratorPricingMode ?? getOrchestratorPricingMode();
+    const fallbackSurface = defaultSurface && normalizeUsageSurface(defaultSurface) !== 'unknown'
+        ? normalizeUsageSurface(defaultSurface)
+        : (ledgerSurface && normalizeUsageSurface(ledgerSurface) !== 'unknown'
+            ? normalizeUsageSurface(ledgerSurface)
+            : undefined);
+
+    const calls: DailyMergedLateCall[] = [];
+    const rawCallIds: string[] = [];
+    const distinctEmails = new Set<string>();
+
+    const project = (email: string, recorded: readonly LedgerRecordedCall[], ids?: readonly string[], surface?: UsageSurface) => {
+        if (email) { distinctEmails.add(email); }
+        for (const id of ids || []) {
+            if (id) { rawCallIds.push(id); }
+        }
+        const bucketSurface = surface && normalizeUsageSurface(surface) !== 'unknown'
+            ? normalizeUsageSurface(surface)
+            : fallbackSurface;
+
+        for (const rc of recorded) {
+            if (!rc || !rc.callId) { continue; }
+            const modelKey = rc.modelKey || rc.modelId || 'Unknown';
+            const at = rc.createdAt || dayData.dateKey;
+            const detail = resolvePricingDetail(modelKey, custom, { at, orchestratorPricingMode: mode });
+            const suppressFrozenFallback = Boolean(detail.mappedBaseKey && mode === 'strict' && detail.provenance === 'unpriced');
+            const repriced = calculateUsageCosts(modelKey, {
+                inputTokens: rc.inputTokens,
+                outputTokens: rc.outputTokens,
+                thinkingTokens: rc.thinkingTokens,
+                cacheReadTokens: rc.cacheReadTokens,
+            }, custom, {
+                at,
+                calls: [{ ...rc, model: modelKey }],
+                callCount: 1,
+                frozenCost: suppressFrozenFallback ? undefined : rc.estimatedCost,
+                orchestratorPricingMode: mode,
+            }).totalCost;
+
+            const callSurf = normalizeUsageSurface(rc.surface ?? bucketSurface);
+            const isUnpriced = detail.pricing === null || (suppressFrozenFallback && repriced === 0);
+            calls.push({
+                callId: canonicalLogicalCallId(rc.callId),
+                createdAt: rc.createdAt,
+                createdAtMs: rc.createdAtMs,
+                modelId: rc.modelId,
+                modelKey,
+                inputTokens: rc.inputTokens,
+                outputTokens: rc.outputTokens,
+                thinkingTokens: rc.thinkingTokens,
+                cacheReadTokens: rc.cacheReadTokens,
+                cacheCreationTokens: rc.cacheCreationTokens,
+                credits: rc.credits,
+                estimatedCost: isUnpriced ? 0 : repriced,
+                ...(rc.ttftSeconds !== undefined ? { ttftSeconds: rc.ttftSeconds } : {}),
+                ...(rc.streamingSeconds !== undefined ? { streamingSeconds: rc.streamingSeconds } : {}),
+                ...(callSurf !== 'unknown' ? { surface: callSurf } : {}),
+                ...(email ? { accountEmail: email } : {}),
+                ...(rc.account || email ? { account: rc.account || email } : {}),
+                ...(rc.authority ? { authority: rc.authority } : {}),
+                ...(rc.cascadeId ? { cascadeId: rc.cascadeId } : {}),
+                ...(rc.workspace ? { workspace: rc.workspace } : {}),
+                ...(isUnpriced ? { unpriced: true } : {}),
+            });
+            rawCallIds.push(rc.callId);
+        }
+    };
+    for (const [emailKey, bucket] of Object.entries(dayData.accounts)) {
+        project(bucket.accountEmail || emailKey, bucket.recordedCalls || [], bucket.recordedCallIds, bucket.surface);
+    }
+    for (const entry of dayData.settled || []) {
+        project(entry.accountEmail, entry.settledCalls || [], entry.recordedCallIds, entry.surface);
+    }
+
+    return {
+        calls,
+        rawCallIds,
+        ...(distinctEmails.size === 1 ? { accountEmail: [...distinctEmails][0] } : {}),
+        ...(fallbackSurface ? { resolvedSurface: fallbackSurface } : {}),
+    };
+}
+
+/**
+ * Flush pending late-arriving cross-midnight buckets from `DailyLedger` into their
+ * true local dates in `DailyStore`.
+ * - Idempotently merges into the target date's existing archive (preserving existing activity
+ *   and existing calls, deduplicating by durable logical call ID).
+ * - Drains pending late calls ONLY after persistence confirms success.
+ * Returns the number of late days flushed.
+ */
+export function flushLateDaysToDailyStore(
+    ledger: DailyLedger,
+    dailyStore: DailyStore,
+    customPricing?: Record<string, ModelPricing>,
+    defaultSurface?: UsageSurface,
+    log?: (msg: string) => void,
+    orchestratorPricingMode?: OrchestratorPricingMode,
+): number {
+    // A synchronous caller cannot confirm an asynchronous backing-store write.
+    // Leave the queue intact until the regular receipt-aware path acknowledges it.
+    if (dailyStore.hasBackingStore) {
+        void flushLateDaysToDailyStoreAsync(ledger, dailyStore, customPricing, defaultSurface, log, orchestratorPricingMode)
+            .catch(() => log?.('Deferred late calls after a backing-store failure'));
+        return 0;
+    }
+    const lateDays = ledger.getLateDaySnapshots();
+    if (lateDays.length === 0) { return 0; }
+
+    let flushed = 0;
+
+    for (const dayData of lateDays) {
+        const { calls, rawCallIds, accountEmail, resolvedSurface } = buildLateMergedCallsFromDayData(
+            dayData,
+            customPricing,
+            defaultSurface,
+            ledger.surface,
+            orchestratorPricingMode,
+        );
+        if (calls.length === 0) { continue; }
+
+        const res = dailyStore.mergeLateDayCalls(dayData.dateKey, calls, {
+            defaultSurface: resolvedSurface,
+            accountEmail,
+        });
+        if (!res.persisted) {
+            log?.(`Deferred draining late calls for ${dayData.dateKey}: persistence failed`);
+            continue;
+        }
+        // Persistence confirmed: acknowledge & drain ONLY the flushed calls for this date
+        ledger.acknowledgeLateDayCalls(dayData.dateKey, rawCallIds);
+        if (res.appliedCalls > 0) {
+            flushed++;
+            log?.(`Merged ${res.appliedCalls} late pre-midnight call(s) into ${dayData.dateKey}`);
+        }
+    }
+    return flushed;
+}
+
+/**
+ * Async variant of {@link flushLateDaysToDailyStore} that awaits persistence confirmation
+ * (including an optional `confirmPersist` check such as `DurableState.flush()`) BEFORE
+ * draining pending late calls from `DailyLedger`.
+ */
+export async function flushLateDaysToDailyStoreAsync(
+    ledger: DailyLedger,
+    dailyStore: DailyStore,
+    customPricing?: Record<string, ModelPricing>,
+    defaultSurface?: UsageSurface,
+    log?: (msg: string) => void,
+    orchestratorPricingMode?: OrchestratorPricingMode,
+    confirmPersist?: () => boolean | Promise<boolean>,
+): Promise<number> {
+    const lateDays = ledger.getLateDaySnapshots();
+    if (lateDays.length === 0) { return 0; }
+
+    let flushed = 0;
+
+    for (const dayData of lateDays) {
+        const { calls, rawCallIds, accountEmail, resolvedSurface } = buildLateMergedCallsFromDayData(
+            dayData,
+            customPricing,
+            defaultSurface,
+            ledger.surface,
+            orchestratorPricingMode,
+        );
+        if (calls.length === 0) { continue; }
+
+        const res = await dailyStore.mergeLateDayCallsAsync(dayData.dateKey, calls, {
+            defaultSurface: resolvedSurface,
+            accountEmail,
+            confirmPersist,
+        });
+        if (!res.committed) {
+            log?.(`Deferred draining late calls for ${dayData.dateKey}: durable commit not confirmed`);
+            continue;
+        }
+        ledger.acknowledgeLateDayCalls(dayData.dateKey, rawCallIds);
+        if (res.appliedCalls > 0) {
+            flushed++;
+            log?.(`Merged ${res.appliedCalls} late pre-midnight call(s) into ${dayData.dateKey}`);
+        }
+    }
+    return flushed;
+}
+
+/**
+ * Dynamically recalculate a settled ledger entry's cost using its preserved per-model
+ * token totals (`entry.modelStats`), respecting custom pricing overrides and Orchestrator
+ * billing mode (`mapped` vs `strict`). Falls back to frozen `entry.totalEstimatedCost`
+ * only for legacy v1 settled entries that predate `modelStats`.
+ */
+export function calculateSettledEntryCosts(
+    entry: LedgerSettledEntry,
+    dateKey: string,
+    customPricing?: Record<string, ModelPricing>,
+    orchestratorPricingMode?: OrchestratorPricingMode,
+): { totalCost: number; costPerModel: Record<string, number> } {
+    const costPerModel: Record<string, number> = {};
+    let totalCost = 0;
+
+    if (entry.modelStats && Object.keys(entry.modelStats).length > 0) {
+        const custom = customPricing || {};
+        const mode = orchestratorPricingMode ?? getOrchestratorPricingMode();
+        for (const [modelKey, ms] of Object.entries(entry.modelStats)) {
+            const detail = resolvePricingDetail(modelKey, custom, { at: dateKey, orchestratorPricingMode: mode });
+            // When an Orchestrator model is explicitly evaluated under 'strict' mode without a custom price,
+            // do NOT fall back to the frozen 'mapped' cost recorded earlier.
+            const suppressFrozenFallback = Boolean(detail.mappedBaseKey && mode === 'strict' && detail.provenance === 'unpriced');
+            const cost = calculateUsageCosts(modelKey, ms, custom, {
+                at: dateKey,
+                calls: entry.settledCalls?.filter(c => c.modelKey === modelKey).map(c => ({ ...c, model: modelKey })),
+                callCount: ms.calls,
+                frozenCost: suppressFrozenFallback ? undefined : ms.estimatedCost,
+                orchestratorPricingMode: mode,
+            }).totalCost;
+            if (cost > 0) {
+                costPerModel[modelKey] = (costPerModel[modelKey] || 0) + cost;
+                totalCost += cost;
+            }
+        }
+        return { totalCost, costPerModel };
+    }
+
+    // Legacy fallback: settled entry without per-model token totals
+    if (entry.totalEstimatedCost > 0) {
+        totalCost = entry.totalEstimatedCost;
+        if (entry.totalCalls > 0) {
+            for (const [modelKey, calls] of Object.entries(entry.modelCalls || {})) {
+                const ratio = calls / entry.totalCalls;
+                costPerModel[modelKey] = (costPerModel[modelKey] || 0) + entry.totalEstimatedCost * ratio;
+            }
+        }
+    }
+    return { totalCost, costPerModel };
+}
+
 /**
  * Build a GMSummary-compatible object from DailyLedger rollover data.
  *
- * `customPricing` re-prices the day from its stored token counts instead of trusting the
- * cost the ledger froze when each call was recorded. Archival is the moment a number
- * becomes permanent, so it should use the best pricing available now, not whatever the
- * table happened to contain that morning — a model the platform shipped mid-day is
- * otherwise archived at $0 forever. It is also the only way a user's custom prices ever
- * reach the calendar, since the ledger records against the built-in table.
- *
- * Only the active buckets are re-priced. Settled entries keep their frozen cost because
- * `LedgerSettledEntry` retains pool-level totals and per-model call counts but no
- * per-model token split, so there is nothing to re-price them from.
+ * `customPricing` and `orchestratorPricingMode` re-price both active buckets and settled
+ * entries that retain per-model token totals (`entry.modelStats`), while falling back to
+ * frozen totals for legacy v1 settled entries.
  */
-export function buildGMSummaryFromLedger(dayData: LedgerDayData, customPricing?: Record<string, ModelPricing>): {
+export function buildGMSummaryFromLedger(
+    dayData: LedgerDayData,
+    customPricing?: Record<string, ModelPricing>,
+    orchestratorPricingMode?: OrchestratorPricingMode,
+): {
     summary: GMSummary;
     totalCost: number;
     costPerModel: Record<string, number>;
     surface?: UsageSurface;
     surfaceBreakdown?: Partial<Record<UsageSurface, SurfaceUsageStats>>;
+    workspaceBreakdown?: Record<string, WorkspaceUsageStats>;
 } {
     let totalCalls = 0;
     let totalIn = 0, totalOut = 0, totalThinking = 0;
@@ -278,7 +742,107 @@ export function buildGMSummaryFromLedger(dayData: LedgerDayData, customPricing?:
     const telemetryByModel: Record<string, LedgerModelTelemetry> = {};
     const costPerModel: Record<string, number> = {};
     const surfaceBreakdown: Partial<Record<UsageSurface, SurfaceUsageStats>> = {};
+    const workspaceBreakdown = Object.create(null) as Record<string, WorkspaceUsageStats>;
+    const FORBIDDEN_WS_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
     let hasExplicitSurface = false;
+    let hasWorkspaceAttribution = false;
+    const custom = customPricing || {};
+    const pricingMode = orchestratorPricingMode ?? getOrchestratorPricingMode();
+
+    const addWorkspaceEntry = (wsKey: string, stats: WorkspaceUsageStats): void => {
+        const key = wsKey || UNATTRIBUTED_WORKSPACE_KEY;
+        if (FORBIDDEN_WS_KEYS.has(key) || !stats || typeof stats !== 'object') { return; }
+        const cur = Object.prototype.hasOwnProperty.call(workspaceBreakdown, key)
+            ? workspaceBreakdown[key]
+            : {
+                calls: 0, inputTokens: 0, outputTokens: 0, thinkingTokens: 0,
+                cacheReadTokens: 0, cacheCreationTokens: 0, credits: 0,
+                knownCostUsd: 0, unpricedCalls: 0,
+                ...(stats.authority ? { authority: stats.authority } : {}),
+            };
+        cur.calls += stats.calls;
+        cur.inputTokens += stats.inputTokens;
+        cur.outputTokens += stats.outputTokens;
+        cur.thinkingTokens += stats.thinkingTokens;
+        cur.cacheReadTokens += stats.cacheReadTokens;
+        cur.cacheCreationTokens += stats.cacheCreationTokens;
+        cur.credits += stats.credits;
+        cur.knownCostUsd += stats.knownCostUsd;
+        cur.unpricedCalls += stats.unpricedCalls;
+        if (!cur.authority && stats.authority) { cur.authority = stats.authority; }
+        if (stats.bySurface && typeof stats.bySurface === 'object') {
+            if (!cur.bySurface) { cur.bySurface = {}; }
+            for (const [sk, sv] of Object.entries(stats.bySurface)) {
+                if (FORBIDDEN_WS_KEYS.has(sk) || !sv || sv.calls <= 0) { continue; }
+                const surf = normalizeUsageSurface(sk);
+                const prev = Object.prototype.hasOwnProperty.call(cur.bySurface, surf)
+                    ? cur.bySurface[surf]!
+                    : {
+                        calls: 0, inputTokens: 0, outputTokens: 0, thinkingTokens: 0,
+                        cacheReadTokens: 0, cacheCreationTokens: 0, credits: 0, estimatedCost: 0,
+                    };
+                prev.calls += sv.calls;
+                prev.inputTokens += sv.inputTokens;
+                prev.outputTokens += sv.outputTokens;
+                prev.thinkingTokens += sv.thinkingTokens;
+                prev.cacheReadTokens += sv.cacheReadTokens;
+                prev.cacheCreationTokens += sv.cacheCreationTokens;
+                prev.credits += sv.credits;
+                prev.estimatedCost += sv.estimatedCost;
+                cur.bySurface[surf] = prev;
+            }
+        }
+        workspaceBreakdown[key] = cur;
+    };
+
+    const addRepricedCallsToWorkspaceBreakdown = (
+        calls: readonly import('./daily-ledger').LedgerRecordedCall[],
+        fallbackSurface: UsageSurface,
+    ): void => {
+        for (const rc of calls) {
+            const wsKey = normalizeWorkspaceKey(rc.workspace, rc.authority);
+            const surf = normalizeUsageSurface(rc.surface ?? fallbackSurface);
+            const modelKey = rc.modelKey || rc.modelId || 'Unknown';
+            const detail = resolvePricingDetail(modelKey, custom, { at: rc.createdAt || dayData.dateKey, orchestratorPricingMode: pricingMode });
+            const suppressFrozen = Boolean(detail.mappedBaseKey && pricingMode === 'strict' && detail.provenance === 'unpriced');
+            const isUnpriced = detail.pricing === null || suppressFrozen;
+            const repriced = isUnpriced ? 0 : calculateUsageCosts(modelKey, {
+                inputTokens: rc.inputTokens,
+                outputTokens: rc.outputTokens,
+                thinkingTokens: rc.thinkingTokens,
+                cacheReadTokens: rc.cacheReadTokens,
+            }, custom, {
+                at: rc.createdAt || dayData.dateKey,
+                callCount: 1,
+                frozenCost: suppressFrozen ? undefined : rc.estimatedCost,
+                orchestratorPricingMode: pricingMode,
+            }).totalCost;
+            addWorkspaceEntry(wsKey, {
+                calls: 1,
+                inputTokens: rc.inputTokens,
+                outputTokens: rc.outputTokens,
+                thinkingTokens: rc.thinkingTokens,
+                cacheReadTokens: rc.cacheReadTokens,
+                cacheCreationTokens: rc.cacheCreationTokens,
+                credits: rc.credits,
+                knownCostUsd: isUnpriced ? 0 : repriced,
+                unpricedCalls: isUnpriced ? 1 : 0,
+                ...(rc.authority ? { authority: rc.authority } : {}),
+                bySurface: {
+                    [surf]: {
+                        calls: 1,
+                        inputTokens: rc.inputTokens,
+                        outputTokens: rc.outputTokens,
+                        thinkingTokens: rc.thinkingTokens,
+                        cacheReadTokens: rc.cacheReadTokens,
+                        cacheCreationTokens: rc.cacheCreationTokens,
+                        credits: rc.credits,
+                        estimatedCost: isUnpriced ? 0 : repriced,
+                    },
+                },
+            });
+        }
+    };
 
     const addSurfaceEntry = (surf: UsageSurface, stats: SurfaceUsageStats): void => {
         if (surf !== 'unknown') { hasExplicitSurface = true; }
@@ -325,7 +889,14 @@ export function buildGMSummaryFromLedger(dayData: LedgerDayData, customPricing?:
                 });
             // The ledger files per-model rows under a display name, which is also the key
             // the Pricing tab writes custom prices under, so look pricing up by that key.
-            const cost = calculateLedgerModelCosts(modelKey, ms, bucket, customPricing || {}, dayData.dateKey).totalCost;
+            const cost = calculateLedgerModelCosts(
+                modelKey,
+                ms,
+                bucket,
+                customPricing || {},
+                dayData.dateKey,
+                orchestratorPricingMode,
+            ).totalCost;
             if (cost > 0) {
                 costPerModel[modelKey] = (costPerModel[modelKey] || 0) + cost;
             }
@@ -336,7 +907,7 @@ export function buildGMSummaryFromLedger(dayData: LedgerDayData, customPricing?:
         if (bucket.totalCalls > 0) {
             if (bucket.surfaceBreakdown) {
                 const rawCostSum = Object.values(bucket.surfaceBreakdown).reduce((s, v) => s + (v?.estimatedCost || 0), 0);
-                const costScale = rawCostSum > 0 && bucketRepricedCost > 0 ? bucketRepricedCost / rawCostSum : 1;
+                const costScale = rawCostSum > 0 ? bucketRepricedCost / rawCostSum : 1;
                 for (const [sk, sv] of Object.entries(bucket.surfaceBreakdown)) {
                     if (!sv || sv.calls <= 0) { continue; }
                     addSurfaceEntry(normalizeUsageSurface(sk), {
@@ -356,10 +927,50 @@ export function buildGMSummaryFromLedger(dayData: LedgerDayData, customPricing?:
                     estimatedCost: bucketRepricedCost,
                 });
             }
+
+            const bucketHasWorkspace = Boolean(
+                bucket.workspaceBreakdown
+                || (Array.isArray(bucket.recordedCalls) && bucket.recordedCalls.some(c => Boolean(c.workspace || c.authority))),
+            );
+            if (bucketHasWorkspace) {
+                hasWorkspaceAttribution = true;
+            }
+            if (Array.isArray(bucket.recordedCalls) && bucket.recordedCalls.length === bucket.totalCalls && bucketHasWorkspace) {
+                addRepricedCallsToWorkspaceBreakdown(bucket.recordedCalls, normalizeUsageSurface(bucket.surface));
+            } else if (bucket.workspaceBreakdown) {
+                for (const [wk, wv] of Object.entries(bucket.workspaceBreakdown)) {
+                    if (wv && wv.calls > 0) { addWorkspaceEntry(wk, wv); }
+                }
+            } else {
+                // Legacy unattributed bucket -> explicitly mapped to UNATTRIBUTED_WORKSPACE_KEY (never smeared!)
+                addWorkspaceEntry(UNATTRIBUTED_WORKSPACE_KEY, {
+                    calls: bucket.totalCalls,
+                    inputTokens: bucket.totalInputTokens,
+                    outputTokens: bucket.totalOutputTokens,
+                    thinkingTokens: bucket.totalThinkingTokens,
+                    cacheReadTokens: bucket.totalCacheRead,
+                    cacheCreationTokens: bucket.totalCacheCreation,
+                    credits: bucket.totalCredits,
+                    knownCostUsd: bucketRepricedCost,
+                    unpricedCalls: 0,
+                    bySurface: cloneSurfaceBreakdown(bucket.surfaceBreakdown) ?? {
+                        [normalizeUsageSurface(bucket.surface)]: {
+                            calls: bucket.totalCalls,
+                            inputTokens: bucket.totalInputTokens,
+                            outputTokens: bucket.totalOutputTokens,
+                            thinkingTokens: bucket.totalThinkingTokens,
+                            cacheReadTokens: bucket.totalCacheRead,
+                            cacheCreationTokens: bucket.totalCacheCreation,
+                            credits: bucket.totalCredits,
+                            estimatedCost: bucketRepricedCost,
+                        },
+                    },
+                });
+            }
         }
     }
 
-    // Merge settled entries
+    // Merge settled entries (dynamically re-priced when per-model modelStats are retained)
     for (const entry of dayData.settled) {
         totalCalls += entry.totalCalls;
         totalIn += entry.totalInputTokens;
@@ -368,13 +979,25 @@ export function buildGMSummaryFromLedger(dayData: LedgerDayData, customPricing?:
         totalCacheRead += entry.totalCacheRead;
         totalCacheCreation += entry.totalCacheCreation || 0;
         totalCredits += entry.totalCredits;
-        totalCost += entry.totalEstimatedCost;
+
+        const settledCosts = calculateSettledEntryCosts(entry, dayData.dateKey, customPricing, orchestratorPricingMode);
+        totalCost += settledCosts.totalCost;
+        for (const [mk, mc] of Object.entries(settledCosts.costPerModel)) {
+            if (mc > 0) {
+                costPerModel[mk] = (costPerModel[mk] || 0) + mc;
+            }
+        }
 
         if (entry.totalCalls > 0) {
             if (entry.surfaceBreakdown) {
+                const rawCostSum = Object.values(entry.surfaceBreakdown).reduce((s, v) => s + (v?.estimatedCost || 0), 0);
+                const costScale = rawCostSum > 0 ? settledCosts.totalCost / rawCostSum : 1;
                 for (const [sk, sv] of Object.entries(entry.surfaceBreakdown)) {
                     if (!sv || sv.calls <= 0) { continue; }
-                    addSurfaceEntry(normalizeUsageSurface(sk), sv);
+                    addSurfaceEntry(normalizeUsageSurface(sk), {
+                        ...sv,
+                        estimatedCost: sv.estimatedCost * costScale,
+                    });
                 }
             } else {
                 addSurfaceEntry(normalizeUsageSurface(entry.surface), {
@@ -385,30 +1008,83 @@ export function buildGMSummaryFromLedger(dayData: LedgerDayData, customPricing?:
                     cacheReadTokens: entry.totalCacheRead,
                     cacheCreationTokens: entry.totalCacheCreation || 0,
                     credits: entry.totalCredits,
-                    estimatedCost: entry.totalEstimatedCost,
+                    estimatedCost: settledCosts.totalCost,
+                });
+            }
+
+            const entryHasWorkspace = Boolean(
+                entry.workspaceBreakdown
+                || (Array.isArray(entry.settledCalls) && entry.settledCalls.some(c => Boolean(c.workspace || c.authority))),
+            );
+            if (entryHasWorkspace) {
+                hasWorkspaceAttribution = true;
+            }
+            if (Array.isArray(entry.settledCalls) && entry.settledCalls.length === entry.totalCalls && entryHasWorkspace) {
+                addRepricedCallsToWorkspaceBreakdown(entry.settledCalls, normalizeUsageSurface(entry.surface));
+            } else if (entry.workspaceBreakdown) {
+                for (const [wk, wv] of Object.entries(entry.workspaceBreakdown)) {
+                    if (wv && wv.calls > 0) { addWorkspaceEntry(wk, wv); }
+                }
+            } else {
+                addWorkspaceEntry(UNATTRIBUTED_WORKSPACE_KEY, {
+                    calls: entry.totalCalls,
+                    inputTokens: entry.totalInputTokens,
+                    outputTokens: entry.totalOutputTokens,
+                    thinkingTokens: entry.totalThinkingTokens || 0,
+                    cacheReadTokens: entry.totalCacheRead,
+                    cacheCreationTokens: entry.totalCacheCreation || 0,
+                    credits: entry.totalCredits,
+                    knownCostUsd: settledCosts.totalCost,
+                    unpricedCalls: 0,
+                    bySurface: cloneSurfaceBreakdown(entry.surfaceBreakdown) ?? {
+                        [normalizeUsageSurface(entry.surface)]: {
+                            calls: entry.totalCalls,
+                            inputTokens: entry.totalInputTokens,
+                            outputTokens: entry.totalOutputTokens,
+                            thinkingTokens: entry.totalThinkingTokens || 0,
+                            cacheReadTokens: entry.totalCacheRead,
+                            cacheCreationTokens: entry.totalCacheCreation || 0,
+                            credits: entry.totalCredits,
+                            estimatedCost: settledCosts.totalCost,
+                        },
+                    },
                 });
             }
         }
 
-        const allocated = allocateSettledEntryByModel(entry);
-
-        for (const [modelKey, calls] of Object.entries(entry.modelCalls)) {
-            // Settled entries only have per-model call counts; distribute
-            // totals proportionally.
-            if (entry.totalCalls > 0) {
-                const modelTokens = allocated[modelKey];
-                mergeModelIntoBreakdown(modelBreakdown, telemetryByModel, modelKey, calls,
-                    modelTokens?.inputTokens || 0,
-                    modelTokens?.outputTokens || 0,
-                    modelTokens?.thinkingTokens || 0,
-                    modelTokens?.cacheReadTokens || 0,
-                    modelTokens?.cacheCreationTokens || 0,
-                    modelTokens?.credits || 0,
-                    entry.modelTelemetry?.[modelKey]);
+        if (entry.modelStats && Object.keys(entry.modelStats).length > 0) {
+            for (const [modelKey, ms] of Object.entries(entry.modelStats)) {
+                const telemetry: LedgerModelTelemetry = entry.modelTelemetry?.[modelKey] || {
+                    ttftSum: ms.ttftSum || 0,
+                    ttftCount: ms.ttftCount || 0,
+                    minTTFT: ms.minTTFT || 0,
+                    maxTTFT: ms.maxTTFT || 0,
+                    streamingSum: ms.streamingSum || 0,
+                    streamingCount: ms.streamingCount || 0,
+                    timedOutputTokens: ms.timedOutputTokens || 0,
+                    timedStreamingSeconds: ms.timedStreamingSeconds || 0,
+                    cacheHitCalls: ms.cacheHitCalls || 0,
+                };
+                mergeModelIntoBreakdown(modelBreakdown, telemetryByModel, modelKey, ms.calls,
+                    ms.inputTokens, ms.outputTokens, ms.thinkingTokens,
+                    ms.cacheReadTokens, ms.cacheCreationTokens, ms.credits,
+                    telemetry);
             }
-            if (entry.totalEstimatedCost > 0 && entry.totalCalls > 0) {
-                const ratio = calls / entry.totalCalls;
-                costPerModel[modelKey] = (costPerModel[modelKey] || 0) + entry.totalEstimatedCost * ratio;
+        } else {
+            const allocated = allocateSettledEntryByModel(entry);
+            for (const [modelKey, calls] of Object.entries(entry.modelCalls)) {
+                // Legacy settled entries only have per-model call counts; distribute totals proportionally.
+                if (entry.totalCalls > 0) {
+                    const modelTokens = allocated[modelKey];
+                    mergeModelIntoBreakdown(modelBreakdown, telemetryByModel, modelKey, calls,
+                        modelTokens?.inputTokens || 0,
+                        modelTokens?.outputTokens || 0,
+                        modelTokens?.thinkingTokens || 0,
+                        modelTokens?.cacheReadTokens || 0,
+                        modelTokens?.cacheCreationTokens || 0,
+                        modelTokens?.credits || 0,
+                        entry.modelTelemetry?.[modelKey]);
+                }
             }
         }
     }
@@ -456,6 +1132,7 @@ export function buildGMSummaryFromLedger(dayData: LedgerDayData, customPricing?:
     };
 
     const clonedSurfaceBreakdown = hasExplicitSurface ? cloneSurfaceBreakdown(surfaceBreakdown) : undefined;
+    const clonedWorkspaceBreakdown = hasWorkspaceAttribution ? cloneWorkspaceBreakdown(workspaceBreakdown) : undefined;
     const dominantSurface = hasExplicitSurface ? dominantUsageSurface(clonedSurfaceBreakdown) : undefined;
 
     return {
@@ -464,6 +1141,7 @@ export function buildGMSummaryFromLedger(dayData: LedgerDayData, customPricing?:
         costPerModel,
         ...(dominantSurface ? { surface: dominantSurface } : {}),
         ...(clonedSurfaceBreakdown ? { surfaceBreakdown: clonedSurfaceBreakdown } : {}),
+        ...(clonedWorkspaceBreakdown ? { workspaceBreakdown: clonedWorkspaceBreakdown } : {}),
     };
 }
 
@@ -798,6 +1476,7 @@ export function buildLiveDailyCycleFromLedger(
         ...(distinctEmails.size === 1 ? { accountEmail: [...distinctEmails][0] } : {}),
         ...(surface && surface !== 'unknown' ? { surface } : {}),
         ...(built.surfaceBreakdown ? { surfaceBreakdown: built.surfaceBreakdown } : {}),
+        ...(built.workspaceBreakdown ? { workspaceBreakdown: built.workspaceBreakdown } : {}),
         isLive: true,
     };
 
@@ -884,6 +1563,135 @@ export function mergeArchivedAndLiveRecords(options: MergeArchivedAndLiveOptions
                         }
                     }
                 }
+            }
+        }
+    }
+
+    // 2b. Merge pending late-arriving cross-midnight day snapshots (if DailyLedger holds any)
+    const lateSource = options.liveLedger && 'getLateDaySnapshots' in options.liveLedger
+        && typeof (options.liveLedger as DailyLedger).getLateDaySnapshots === 'function'
+        ? (options.liveLedger as DailyLedger)
+        : (options.liveLedger && 'ledger' in options.liveLedger && options.liveLedger.ledger
+            && 'getLateDaySnapshots' in options.liveLedger.ledger
+            && typeof (options.liveLedger.ledger as DailyLedger).getLateDaySnapshots === 'function'
+            ? (options.liveLedger.ledger as DailyLedger)
+            : null);
+    if (lateSource) {
+        const lateCustomPricing = options.customPricing ?? extracted?.customPricing;
+        const lateDefaultSurface = options.defaultSurface ?? extracted?.defaultSurface;
+        for (const lateDay of lateSource.getLateDaySnapshots()) {
+            const existing = merged.get(lateDay.dateKey);
+            let effectiveLateDay = lateDay;
+            if (existing) {
+                const archivedIds = new Set<string>();
+                for (const c of existing.cycles) {
+                    for (const id of collectCycleRecordedCallIds(c)) {
+                        archivedIds.add(id);
+                    }
+                }
+                if (archivedIds.size > 0) {
+                    const filteredAccounts: Record<string, LedgerAccountBucket> = {};
+                    let hasRemaining = false;
+                    for (const [email, bucket] of Object.entries(lateDay.accounts)) {
+                        const unseen = (bucket.recordedCalls || []).filter(rc =>
+                            !archivedIds.has(rc.callId) && !archivedIds.has(canonicalLogicalCallId(rc.callId)),
+                        );
+                        if (unseen.length === (bucket.recordedCalls || []).length) {
+                            filteredAccounts[email] = bucket;
+                            hasRemaining = true;
+                        } else if (unseen.length > 0) {
+                            const rebuilt: LedgerAccountBucket = {
+                                accountEmail: bucket.accountEmail,
+                                totalCalls: 0,
+                                totalInputTokens: 0,
+                                totalOutputTokens: 0,
+                                totalThinkingTokens: 0,
+                                totalCacheRead: 0,
+                                totalCacheCreation: 0,
+                                totalCredits: 0,
+                                totalEstimatedCost: 0,
+                                modelStats: {},
+                                recordedCallIds: [],
+                                recordedCalls: unseen,
+                                ...(bucket.surface ? { surface: bucket.surface } : {}),
+                            };
+                            for (const rc of unseen) {
+                                rebuilt.totalCalls++;
+                                rebuilt.totalInputTokens += rc.inputTokens;
+                                rebuilt.totalOutputTokens += rc.outputTokens;
+                                rebuilt.totalThinkingTokens += rc.thinkingTokens;
+                                rebuilt.totalCacheRead += rc.cacheReadTokens;
+                                rebuilt.totalCacheCreation += rc.cacheCreationTokens;
+                                rebuilt.totalCredits += rc.credits;
+                                rebuilt.totalEstimatedCost += rc.estimatedCost;
+                                rebuilt.recordedCallIds.push(rc.callId);
+                                const ms = rebuilt.modelStats[rc.modelKey] || {
+                                    calls: 0, inputTokens: 0, outputTokens: 0, thinkingTokens: 0,
+                                    cacheReadTokens: 0, cacheCreationTokens: 0, credits: 0, estimatedCost: 0,
+                                };
+                                ms.calls++;
+                                ms.inputTokens += rc.inputTokens;
+                                ms.outputTokens += rc.outputTokens;
+                                ms.thinkingTokens += rc.thinkingTokens;
+                                ms.cacheReadTokens += rc.cacheReadTokens;
+                                ms.cacheCreationTokens += rc.cacheCreationTokens;
+                                ms.credits += rc.credits;
+                                ms.estimatedCost += rc.estimatedCost;
+                                rebuilt.modelStats[rc.modelKey] = ms;
+                                if (bucket.workspaceBreakdown || rc.workspace || rc.authority) {
+                                    if (!rebuilt.workspaceBreakdown) { rebuilt.workspaceBreakdown = {}; }
+                                    const wsKey = normalizeWorkspaceKey(rc.workspace, rc.authority);
+                                    const surf = normalizeUsageSurface(rc.surface ?? bucket.surface);
+                                    const knownCost = rc.unpriced ? 0 : rc.estimatedCost;
+                                    const wb = rebuilt.workspaceBreakdown[wsKey] || {
+                                        calls: 0, inputTokens: 0, outputTokens: 0, thinkingTokens: 0,
+                                        cacheReadTokens: 0, cacheCreationTokens: 0, credits: 0,
+                                        knownCostUsd: 0, unpricedCalls: 0,
+                                        ...(rc.authority ? { authority: rc.authority } : {}),
+                                    };
+                                    wb.calls++;
+                                    wb.inputTokens += rc.inputTokens;
+                                    wb.outputTokens += rc.outputTokens;
+                                    wb.thinkingTokens += rc.thinkingTokens;
+                                    wb.cacheReadTokens += rc.cacheReadTokens;
+                                    wb.cacheCreationTokens += rc.cacheCreationTokens;
+                                    wb.credits += rc.credits;
+                                    wb.knownCostUsd += knownCost;
+                                    if (rc.unpriced) { wb.unpricedCalls++; }
+                                    if (!wb.bySurface) { wb.bySurface = {}; }
+                                    const sb = wb.bySurface[surf] || {
+                                        calls: 0, inputTokens: 0, outputTokens: 0, thinkingTokens: 0,
+                                        cacheReadTokens: 0, cacheCreationTokens: 0, credits: 0, estimatedCost: 0,
+                                    };
+                                    sb.calls++;
+                                    sb.inputTokens += rc.inputTokens;
+                                    sb.outputTokens += rc.outputTokens;
+                                    sb.thinkingTokens += rc.thinkingTokens;
+                                    sb.cacheReadTokens += rc.cacheReadTokens;
+                                    sb.cacheCreationTokens += rc.cacheCreationTokens;
+                                    sb.credits += rc.credits;
+                                    sb.estimatedCost += knownCost;
+                                    wb.bySurface[surf] = sb;
+                                    rebuilt.workspaceBreakdown[wsKey] = wb;
+                                }
+                            }
+                            filteredAccounts[email] = rebuilt;
+                            hasRemaining = true;
+                        }
+                    }
+                    if (!hasRemaining) { continue; }
+                    effectiveLateDay = { dateKey: lateDay.dateKey, accounts: filteredAccounts, settled: [] };
+                }
+            }
+            const lateCycle = buildLiveDailyCycleFromLedger(effectiveLateDay, lateCustomPricing, {
+                defaultSurface: lateDefaultSurface,
+                now: nowDate,
+            });
+            if (!lateCycle) { continue; }
+            if (!existing) {
+                merged.set(lateDay.dateKey, { date: lateDay.dateKey, cycles: [lateCycle] });
+            } else {
+                existing.cycles.push(lateCycle);
             }
         }
     }

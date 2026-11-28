@@ -1,12 +1,20 @@
 import { aiCreditTotal } from './account-credits';
-import { formatClockTime, formatNumber, getLanguage, tBi } from './i18n-core';
+import { formatClockTime, formatNumber, getLanguage, t, tBi, tHtml } from './i18n-core';
 import { getDaysUntilBillingDay } from './billing-day';
 import {
     formatCurrencyAmount,
     formatDualCurrencyAmount,
     resolveCurrencyConfig,
     type CurrencyInput,
-} from './cli-usage-scanner';
+} from './core/currency';
+import {
+    projectForOverview,
+    type ContextDisplayBasis,
+    type ContextThresholdMarker,
+    type PublishedMonitorObservation,
+    type SurfaceObservationProjection,
+} from './core/context-display';
+import type { SwarmGroupCostSummary, SwarmTopologySnapshot } from './core/swarm-registry';
 import {
     CONTEXT_CATEGORY_META,
     CONTEXT_FREE_SPACE_META,
@@ -27,6 +35,7 @@ import {
 } from './monitor-overview';
 import type { ModelQuotaGroup } from './model-quota';
 import {
+    getModelDisplayName,
     isShowModelShortId,
     localizePickerEffortLabel,
     normalizeModelDisplayName,
@@ -47,12 +56,25 @@ import {
     type UserTurnCacheSummary,
 } from './orchestrator-attribution';
 import type { OrchestratorPricingMode } from './pricing-store';
-import type { QuotaRunwayEstimate } from './quota-runway';
+import {
+    projectQuotaDisplay,
+    type QuotaDirectionMode,
+    type QuotaRunwayEstimate,
+    type QuotaWindowMode,
+} from './quota-runway';
 import { formatResetAbsolute } from './reset-time';
-import { formatCachePercent, formatLatency, formatSpeed, type CacheState } from './telemetry-metrics';
+import {
+    formatCachePercent,
+    formatLatency,
+    formatSpeed,
+    type CacheState,
+    type PromptCacheTtlEvaluation,
+    type SpeedMetricMode,
+} from './telemetry-metrics';
 import type { ContextUsage } from './tracker';
+import type { CdpStatus } from './app/sidecar-types';
 import { ICON } from './webview-icons';
-import { esc, tBiHtml } from './webview-helpers';
+import { esc, richTipAttrs, tBiHtml, type RichTipSpec } from './webview-helpers';
 
 // ─── Pure Compression Stats Helper (shared with statusbar.ts, zero vscode) ───
 
@@ -113,6 +135,64 @@ export interface LowQuotaWarningState {
     pools: LowQuotaWarningItem[];
 }
 
+export interface SwarmMemberLiveRow {
+    cascadeId: string;
+    memberName: string;
+    role?: string;
+    isCoordinator?: boolean;
+    relationshipKind?: 'swarm_member' | 'direct_subagent' | 'nested_helper' | 'fork';
+    phase?: string;
+    killed?: boolean;
+    /** Assigned model from swarm manifest (strictly distinct from measuredModel). */
+    assignedModel?: string | null;
+    /** Actual model measured from RPC telemetry. */
+    measuredModel?: string | null;
+    contextPct?: number | null;
+    contextUsedTokens?: number | null;
+    contextLimitTokens?: number | null;
+    directCostUsd?: number | null;
+    recordedCalls?: number;
+    unpricedCalls?: number;
+    lastObservedAt?: number | null;
+    isInspected?: boolean;
+    isLockedRoot?: boolean;
+}
+
+export interface SwarmOverviewDisplayData {
+    rootId: string;
+    title?: string;
+    members: readonly SwarmMemberLiveRow[];
+    totalMemberCount?: number;
+    observedMemberCount?: number;
+    partialCoverage?: boolean;
+    /** Deduplicated inclusive group cost across unique logical calls (USD). */
+    groupTotalCostUsd?: number | null;
+    groupUnpricedCalls?: number;
+    membersWithCalls?: number;
+    lastSweepAtMs?: number | null;
+}
+
+export interface HandoffV2PreviewData {
+    subjectCascadeId: string;
+    dataRevision: number;
+    markdown: string;
+    generatedAtMs?: number;
+}
+
+export interface CompactionRecoveryBriefData {
+    eventKey: string;
+    cascadeId: string;
+    model?: string;
+    role?: string;
+    branch?: string;
+    beforeTokens?: number | null;
+    afterTokens?: number | null;
+    savedTokens?: number | null;
+    summaryText: string;
+    observedAtMs?: number;
+    dismissed?: boolean;
+}
+
 export interface OverviewExtras extends OverviewTelemetryInput {
     contextBreakdown?: ContextBreakdownSnapshot | null;
     quotaRunways?: Record<string, QuotaRunwayEstimate>;
@@ -138,6 +218,49 @@ export interface OverviewExtras extends OverviewTelemetryInput {
     orchestratorSplit?: OrchestratorSplitSummary | null;
     /** v1.17.6: Optional per-conversation GM call records for live split/turn analysis. */
     gmConversations?: Record<string, GMConversationData>;
+    /** v1.18 D9: Single frozen observation backing cross-surface parity. */
+    observation?: PublishedMonitorObservation | null;
+    /** v1.18 D9: Active inspected worker/subagent cascade ID (when inspecting without changing lockedRootId). */
+    inspectedMemberId?: string | null;
+    /** v1.18 D9: Display label/title for the currently inspected member. */
+    inspectedMemberLabel?: string | null;
+    /** v1.18 D9: Currently locked main coordinator cascade ID (if any). */
+    lockedRootId?: string | null;
+    /** v1.18 D9: True when the locked root is transiently absent (pending, never silently cleared). */
+    lockPendingUnavailable?: boolean;
+    /** v1.18 D9: Optional non-intrusive offer to retarget lockedRootId to a newly focused main conversation. */
+    retargetOfferId?: string | null;
+    /** v1.18 D9: Optional display title for the retarget offer target. */
+    retargetOfferTitle?: string | null;
+    /** Conversations available from this host, distinct from manifest-only membership. */
+    readableMemberIds?: ReadonlySet<string>;
+    /** v1.18 D9: Optional pre-aggregated Swarm / Subagents live tracking payload. */
+    swarmOverview?: SwarmOverviewDisplayData | null;
+    /** v1.18 D9: Optional raw Swarm topology snapshot (auto-projected if swarmOverview omitted). */
+    swarmTopology?: SwarmTopologySnapshot | null;
+    swarmGroupCost?: SwarmGroupCostSummary | null;
+    /** v1.18 §5.2.4: Optional pre-populated Handoff v2 preview bound to (subjectCascadeId, dataRevision). */
+    handoffPreview?: HandoffV2PreviewData | null;
+    /** v1.18 §5.2.4: Optional read-only Compaction Recovery Brief card (dismissible, never auto-injected). */
+    recoveryBrief?: CompactionRecoveryBriefData | null;
+    /** v1.18 §5.2.1: Optional active Prompt Cache 5m idle TTL heuristic evaluation. */
+    cacheTtl?: PromptCacheTtlEvaluation | null;
+    /** v1.18 D9: Active context percentage display basis ('compaction' | 'native'). */
+    contextPctBasis?: ContextDisplayBasis;
+    /** v1.18 §5.2.2: Active speed metric mode ('decode' | 'e2e'). */
+    speedMetricMode?: SpeedMetricMode;
+    /** v1.18 §5.2.3: Active quota display window ('5h' | '7d' | 'tightest'). */
+    quotaWindowMode?: QuotaWindowMode;
+    /** v1.18 §5.2.3: Active quota percentage direction ('remaining' | 'used'). */
+    quotaDirectionMode?: QuotaDirectionMode;
+    /** v1.18.1: Whether user dismissed the App Overlays & CDP quick-setup banner. */
+    appOnboardingDismissed?: boolean;
+    /** v1.18.1: Current App CDP status (used to auto-hide onboarding banner once overlays are active). */
+    cdpStatus?: CdpStatus | null;
+    /** v1.18.1: Whether App Top-Right Status Bar CDP overlay is enabled. */
+    appTopBarEnabled?: boolean;
+    /** v1.18.1: Whether App Composer Context Ring CDP overlay is enabled. */
+    appComposerRingEnabled?: boolean;
 }
 
 export function formatRunwayDurationHtml(ms: number): string {
@@ -162,181 +285,66 @@ export function formatRunwayDurationHtml(ms: number): string {
     return tBiHtml(`${totalMinutes}m`, `${totalMinutes} 分钟`);
 }
 
-interface RichTipSpec {
-    key: string;
-    title?: string;
-    body: string;
-    meta?: string;
-    pin?: boolean;
-    focusable?: boolean;
-}
-
-function richTipAttrs(spec: RichTipSpec): string {
-    const parts = [
-        `data-popover-key="${esc(spec.key)}"`,
-        spec.title ? `data-tip-title="${esc(spec.title)}"` : '',
-        `data-tip-body="${esc(spec.body)}"`,
-        spec.meta ? `data-tip-meta="${esc(spec.meta)}"` : '',
-        spec.pin ? 'data-tip-pin="true"' : '',
-        spec.focusable ? 'tabindex="0"' : '',
-    ].filter(Boolean);
-    return parts.length ? ` ${parts.join(' ')}` : '';
-}
-
 export function formatRunwayBadgeHtml(estimate: QuotaRunwayEstimate | undefined, keyPrefix = 'runway'): string {
-    if (!estimate) { return ''; }
+    if (!estimate || estimate.status === 'custom_model_isolated') { return ''; }
     const poolSlug = estimate.poolKey || 'pool';
-    const burnRatePart = typeof estimate.burnRatePctPerHour === 'number'
-        && Number.isFinite(estimate.burnRatePctPerHour)
-        && estimate.burnRatePctPerHour > 0
-        ? ` · ${esc(estimate.burnRatePctPerHour.toFixed(1))}%/h`
-        : '';
-    const windowRule = tBi(
-        'Estimated from your quota burn slope over a 45-minute rolling window.',
-        '按最近 45 分钟滚动窗口内的配额消耗速率推算。',
-    );
-    const rateLine = typeof estimate.burnRatePctPerHour === 'number'
-        && Number.isFinite(estimate.burnRatePctPerHour)
-        && estimate.burnRatePctPerHour > 0
-        ? `\n${tBi('Current burn rate', '当前消耗速率')}: ${estimate.burnRatePctPerHour.toFixed(1)}%/h`
-        : '';
-
-    switch (estimate.status) {
-        case 'safe_until_reset': {
-            const attrs = richTipAttrs({
-                key: `${keyPrefix}:runway:${poolSlug}`,
-                title: tBi('Quota Runway: Safe Before Reset', '配额续航：重置前充裕'),
-                body: `${tBi(
-                    'At your recent pace, remaining quota should last until the next scheduled reset.',
-                    '按近期使用节奏估算，当前剩余配额足够撑到下次重置。',
-                )}${rateLine}`,
-                meta: windowRule,
-                focusable: true,
-            });
-            return `<div class="quota-runway-row" data-runway-status="safe_until_reset">
-                <span class="quota-runway-pill is-safe"${attrs}>${tBiHtml('Safe before reset', '重置前充裕')}${burnRatePart}</span>
-            </div>`;
-        }
-        case 'at_risk': {
-            const exhaustHtml = estimate.estExhaustMs !== null
-                ? formatRunwayDurationHtml(estimate.estExhaustMs)
-                : '—';
-            const attrs = richTipAttrs({
-                key: `${keyPrefix}:runway:${poolSlug}`,
-                title: tBi('Quota Runway: At Risk', '配额续航：预计提前耗尽'),
-                body: `${tBi(
-                    'At your current pace, this quota pool may run out before the next reset window.',
-                    '按当前消耗速度推算，该共享配额池可能会在下次重置前耗尽。',
-                )}${rateLine}`,
-                meta: windowRule,
-                focusable: true,
-            });
-            return `<div class="quota-runway-row" data-runway-status="at_risk">
-                <span class="quota-runway-pill is-risk"${attrs}>${tBiHtml('Est. exhaust in', '预计耗尽')} ${exhaustHtml}${burnRatePart}</span>
-            </div>`;
-        }
-        case 'exhausted': {
-            const attrs = richTipAttrs({
-                key: `${keyPrefix}:runway:${poolSlug}`,
-                title: tBi('Quota Exhausted', '配额已耗尽'),
-                body: tBi(
-                    'Remaining allowance for this pool has reached 0%. Wait for the reset window or switch to another model pool.',
-                    '该共享配额池剩余额度已降至 0%，请等待重置或切换到其他配额池模型。',
-                ),
-                meta: windowRule,
-                focusable: true,
-            });
-            return `<div class="quota-runway-row" data-runway-status="exhausted">
-                <span class="quota-runway-pill is-exhausted"${attrs}>${tBiHtml('Quota exhausted', '配额已耗尽')}</span>
-            </div>`;
-        }
-        case 'custom_model_isolated':
-            return '';
-        case 'insufficient_data':
-        default:
-            if (estimate.recoveredRecently) {
-                const attrs = richTipAttrs({
-                    key: `${keyPrefix}:runway:${poolSlug}`,
-                    title: tBi('Quota Recently Recovered', '配额刚恢复'),
-                    body: tBi(
-                        'Quota jumped upward after a recent reset; runway estimation will resume once new usage samples arrive.',
-                        '检测到配额刚刚重置回升，待采集新的使用样本后会恢复续航预测。',
-                    ),
-                    meta: windowRule,
-                    focusable: true,
-                });
-                return `<div class="quota-runway-row" data-runway-status="recovered">
-                    <span class="quota-runway-pill is-safe"${attrs}>${tBiHtml('Quota recently recovered', '配额刚恢复')}</span>
-                </div>`;
-            }
-            if (burnRatePart) {
-                const attrs = richTipAttrs({
-                    key: `${keyPrefix}:runway:${poolSlug}`,
-                    title: tBi('Quota Burn Rate', '配额消耗速率'),
-                    body: `${tBi(
-                        'Observed hourly quota consumption rate; reset time is unavailable or data is still accumulating.',
-                        '观测到的每小时配额消耗速率；暂无完整重置时间或样本仍在累积中。',
-                    )}${rateLine}`,
-                    meta: windowRule,
-                    focusable: true,
-                });
-                return `<div class="quota-runway-row" data-runway-status="insufficient_data">
-                    <span class="quota-runway-pill is-muted"${attrs}>${tBiHtml('Burn rate', '消耗速率')} ${esc(estimate.burnRatePctPerHour!.toFixed(1))}%/h</span>
-                </div>`;
-            }
-            return '';
+    const hasRate = typeof estimate.burnRatePctPerHour === 'number' && Number.isFinite(estimate.burnRatePctPerHour) && estimate.burnRatePctPerHour > 0;
+    const burnRatePart = hasRate ? ` · ${esc(estimate.burnRatePctPerHour!.toFixed(1))}%/h` : '';
+    const windowRule = tBi('45-minute rolling burn slope.', '按最近 45 分钟滚动窗口消耗斜率推算。');
+    const rateLine = hasRate ? `\n${tBi('Burn rate', '消耗速率')}: ${estimate.burnRatePctPerHour!.toFixed(1)}%/h` : '';
+    const renderPill = (statusAttr: string, cls: string, titleEn: string, titleZh: string, bodyEn: string, bodyZh: string, textHtml: string) => {
+        const attrs = richTipAttrs({ key: `${keyPrefix}:runway:${poolSlug}`, title: tBi(titleEn, titleZh), body: `${tBi(bodyEn, bodyZh)}${rateLine}`, meta: windowRule, focusable: true });
+        return `<div class="quota-runway-row" data-runway-status="${statusAttr}"><span class="quota-runway-pill ${cls}"${attrs}>${textHtml}</span></div>`;
+    };
+    if (estimate.status === 'safe_until_reset') {
+        return renderPill('safe_until_reset', 'is-safe', 'Quota Runway: Safe', '配额续航：充裕', 'Remaining quota should last until reset.', '按近期速率，配额可撑到下次重置。', `${tBiHtml('Safe before reset', '重置前充裕')}${burnRatePart}`);
     }
+    if (estimate.status === 'at_risk') {
+        const ex = estimate.estExhaustMs !== null ? formatRunwayDurationHtml(estimate.estExhaustMs) : '—';
+        return renderPill('at_risk', 'is-risk', 'Quota Runway: At Risk', '配额续航：预警', 'May run out before next reset.', '按当前速率可能在重置前耗尽。', `${tBiHtml('Est. exhaust in', '预计耗尽')} ${ex}${burnRatePart}`);
+    }
+    if (estimate.status === 'exhausted') {
+        return renderPill('exhausted', 'is-exhausted', 'Quota Exhausted', '配额已耗尽', 'Remaining allowance reached 0%.', '该配额池剩余配额已降至 0%。', tBiHtml('Quota exhausted', '配额已耗尽'));
+    }
+    if (estimate.recoveredRecently) {
+        return renderPill('recovered', 'is-safe', 'Quota Recovered', '配额刚恢复', 'Quota recovered after recent reset.', '检测到配额刚重置回升。', tBiHtml('Quota recently recovered', '配额刚恢复'));
+    }
+    if (hasRate) {
+        return renderPill('insufficient_data', 'is-muted', 'Quota Burn Rate', '配额消耗速率', 'Observed hourly burn rate.', '观测到的每小时配额消耗速率。', `${tBiHtml('Burn rate', '消耗速率')} ${esc(estimate.burnRatePctPerHour!.toFixed(1))}%/h`);
+    }
+    return '';
+}
+
+export function buildAppOnboardingBannerHtml(telemetry?: OverviewExtras): string {
+    if (telemetry?.surface !== 'app-sidecar' || telemetry.appOnboardingDismissed) { return ''; }
+    const cdpOn = telemetry.cdpStatus?.state === 'connected';
+    if (cdpOn && (telemetry.appTopBarEnabled || telemetry.appComposerRingEnabled)) { return ''; }
+    const inst = Boolean(telemetry.cdpStatus?.launcherStatus?.installed);
+    return `<section class="app-onboarding-banner" id="appOnboardingBanner" data-app-onboarding-banner="true" data-cdp-connected="${cdpOn}" data-launcher-installed="${inst}" aria-labelledby="app-onboarding-heading"><div class="app-onboarding-head"><span class="app-onboarding-badge">${ICON.bolt} <span>${tBiHtml('Overlays & CDP Setup', '悬浮层与 CDP 引导')}</span></span><h3 id="app-onboarding-heading" class="app-onboarding-title">${tBiHtml('Sidecar works zero-config — want persistent overlays too?', '核心侧栏已开箱即用 —— 想开启桌面常驻悬浮层吗？')}</h3></div><p class="app-onboarding-body">${tBiHtml('Enable optional Top Bar & Composer Ring via the zero-patch, auto-update-proof CDP Launcher.', '通过零魔改、抗自动更新的持久化 CDP 启动器开启顶部状态栏与输入框圆环。')}</p><div class="app-onboarding-actions"><button type="button" class="action-btn stg-btn-primary" id="onboardingSetupCdpBtn" data-action="setupCdpLauncher" data-feedback-id="onboardingFeedback"><span>${inst ? tBiHtml('Recreate CDP Launcher', '重新创建启动器') : tBiHtml('1-Click Create CDP Launcher', '一键创建 CDP 启动器')}</span></button><button type="button" class="action-btn" id="onboardingGoCdpBtn" data-action="openOverlaysCdpSettings"><span>${tBiHtml('Open Overlays & CDP Settings', '打开悬浮层与 CDP 设置')}</span></button><button type="button" class="action-btn app-onboarding-dismiss-btn" id="onboardingDismissBtn" data-action="dismissAppOnboarding"><span>${tBiHtml("Don't show again", '不再提示')}</span></button><span id="onboardingFeedback" class="threshold-feedback" role="status"></span></div></section>`;
 }
 
 export function buildStaleBannerHtml(staleState: MonitorStaleState | null | undefined, keyPrefix = 'stale'): string {
     if (!staleState?.isStale) { return ''; }
-    const lang = getLanguage();
-    const lastTime = staleState.lastSuccessAtMs
-        ? formatClockTime(new Date(staleState.lastSuccessAtMs), lang)
-        : '';
-    const updatedPart = lastTime
-        ? ` <span class="stale-banner-time">· ${tBiHtml('Last updated', '上次更新')} ${esc(lastTime)}</span>`
-        : '';
-    const errLine = staleState.lastError
-        ? `\n${tBi('Last error', '最近错误')}: ${staleState.lastError}`
-        : '';
+    const lastTime = staleState.lastSuccessAtMs ? formatClockTime(new Date(staleState.lastSuccessAtMs), getLanguage()) : '';
+    const updatedPart = lastTime ? ` <span class="stale-banner-time">· ${tBiHtml('Last updated', '上次更新')} ${esc(lastTime)}</span>` : '';
+    const errLine = staleState.lastError ? `\n${tBi('Last error', '最近错误')}: ${staleState.lastError}` : '';
     const tipAttrs = richTipAttrs({
         key: `${keyPrefix}:stale-banner`,
         title: tBi('Cached / Stale Telemetry', '缓存数据（待刷新）'),
-        body: `${tBi(
-            'The monitor could not reach the local Antigravity service on the latest poll, so the last successful reading is shown instead of blanking the panel.',
-            '最近一次轮询暂时无法连接本地 Antigravity 服务，面板保留上次成功拉取的快照避免白屏。',
-        )}${errLine}`,
-        meta: tBi('Auto-reconnect retries on every polling cycle.', '后台会在每个轮询周期自动尝试重连。'),
+        body: `${tBi('Local service unreachable; showing last good snapshot.', '暂时无法连接本地服务，保留上次成功快照。')}${errLine}`,
         focusable: true,
     });
-    return `<div class="stale-data-banner" role="status" data-stale-banner="true"${tipAttrs}>
-        <span class="stale-badge-pill"><span class="stale-dot" aria-hidden="true"></span><span>${tBiHtml('Cached / Stale', '缓存数据（待刷新）')}</span></span>
-        <span class="stale-banner-desc">${tBiHtml('Showing last known telemetry while reconnecting to the local service.', '正在重连本地服务，当前保留上次成功拉取的缓存数据。')}${updatedPart}</span>
-    </div>`;
+    return `<div class="stale-data-banner" role="status" data-stale-banner="true"${tipAttrs}><span class="stale-badge-pill"><span class="stale-dot" aria-hidden="true"></span><span>${tBiHtml('Cached / Stale', '缓存数据（待刷新）')}</span></span><span class="stale-banner-desc">${tBiHtml('Showing last known telemetry while reconnecting.', '正在重连本地服务，保留上次缓存数据。')}${updatedPart}</span></div>`;
 }
 
 export function buildCustomModelBannerHtml(keyPrefix = 'byok'): string {
     const tipAttrs = richTipAttrs({
         key: `${keyPrefix}:byok-banner`,
         title: tBi('Custom / BYOK Model Isolation', '自定义 / BYOK 模型配额隔离'),
-        body: tBi(
-            'BYOK (Bring Your Own Key) and custom endpoints are billed by your own provider, not Google Antigravity quota pools.',
-            'BYOK（自带 API 密钥）或自定义接口由你自己的服务商计费，不占用 Google Antigravity 配额池。',
-        ),
-        meta: tBi(
-            'Low-quota banners and pool runway alerts are automatically muted while a custom model is active.',
-            '当活跃会话使用自定义模型时，低配额预警与配额池续航提醒会自动静音并折叠。',
-        ),
+        body: tBi('Custom/BYOK endpoints do not consume Google Antigravity quota pools.', '自定义 / BYOK 模型由自有服务商计费，不占用 Google Antigravity 配额池。'),
         focusable: true,
     });
-    return `<div class="custom-model-banner" role="status" data-custom-model-isolated="true"${tipAttrs}>
-        <span class="custom-model-pill">${tBiHtml('Custom Model Isolated', '自定义模型（配额独立）')}</span>
-        <span class="custom-model-desc">${tBiHtml(
-        'Active session uses a custom / BYOK model that does not consume Google Antigravity quota pools. Pool alerts are suppressed.',
-        '当前会话使用自定义 / BYOK 模型，不消耗 Google Antigravity 配额池，已自动折叠并静音配额池预警。',
-    )}</span>
-    </div>`;
+    return `<div class="custom-model-banner" role="status" data-custom-model-isolated="true"${tipAttrs}><span class="custom-model-pill">${tBiHtml('Custom Model Isolated', '自定义模型（配额独立）')}</span><span class="custom-model-desc">${tBiHtml('Custom / BYOK model active; Google quota pool alerts suppressed.', '当前使用自定义 / BYOK 模型，不消耗 Google 配额池，已静音池预警。')}</span></div>`;
 }
 
 // ─── v1.17.6 Low-Quota Warning Banner & Jargon Tooltips ──────────────────────
@@ -375,7 +383,7 @@ export function evaluateLowQuotaWarning(
             consider(group.fiveHourQuota.remainingFraction, tBi('5h', '5h'), group.fiveHourQuota.resetTime);
         }
         if (group.weeklyQuota) {
-            consider(group.weeklyQuota.remainingFraction, tBi('Weekly', '周额度'), group.weeklyQuota.resetTime);
+            consider(group.weeklyQuota.remainingFraction, t('quota.weekly'), group.weeklyQuota.resetTime);
         }
         if (minFrac === null && group.minimum !== null) {
             consider(group.minimum, undefined, group.resetTime);
@@ -421,7 +429,7 @@ export function buildLowQuotaWarningBannerHtml(
         title: tBi('Low Quota Warning', '低配额警告'),
         body: tBi(
             `One or more shared quota pools dropped to or below your alert threshold (${warning.threshold}%).`,
-            `有共享配额池的剩余额度已降至你设定的提醒阈值（≤ ${warning.threshold}%）。`,
+            `有共享配额池的剩余配额已降至你设定的提醒阈值（≤ ${warning.threshold}%）。`,
         ),
         meta: tBi(
             'Click "Threshold" to adjust the percentage or set 0 to disable alerts.',
@@ -433,7 +441,7 @@ export function buildLowQuotaWarningBannerHtml(
     return `<div class="low-quota-banner" id="lowQuotaBanner" role="alert" data-low-quota-banner="true" data-threshold="${warning.threshold}"${bannerTipAttrs}>
         <div class="low-quota-banner-head">
             <span class="low-quota-title">${ICON.bolt} <span>${tBiHtml('Low Quota Warning', '低配额警告')} (≤ ${warning.threshold}%)</span></span>
-            <button type="button" class="low-quota-settings-btn" data-overview-target="settings">${tBiHtml('Threshold', '调整阈值')}</button>
+            <button type="button" class="low-quota-settings-btn" data-overview-target="settings" data-overview-anchor="quotaNotifyInput">${tBiHtml('Threshold', '调整阈值')}</button>
         </div>
         <div class="low-quota-pools">${poolChips}</div>
     </div>`;
@@ -441,110 +449,45 @@ export function buildLowQuotaWarningBannerHtml(
 
 type JargonKey = 'ttft' | 'dual-cap' | 'session-cost';
 
+const JARGON_CATALOG = `ttft\tTTFT (Time To First Token)\t首字延迟 (TTFT)\tWait time until the first output token.\t发出请求到吐出首字的等待耗时。
+dual-cap\tAuto-Compaction Limit vs Native Ceiling\t自动压缩上限 vs 原生窗口上限\tAuto-compaction triggers before the physical model window fills.\t自动压缩上限早于底层模型原生窗口上限触发。
+session-cost\tAPI Reference Cost\tAPI 参考费用\tEquivalent public API spend (reference only, not your bill).\t按公开单价折算的参考费用，并非实际订阅账单。`;
+
+const JARGON_MAP: Record<string, readonly [string, string, string, string]> = Object.fromEntries(
+    JARGON_CATALOG.split('\n').map(l => {
+        const [k, te, tz, be, bz] = l.split('\t');
+        return [k, [te, tz, be, bz] as const];
+    }),
+);
+
 function jargonTipHtml(key: JargonKey): string {
-    const copy: Record<JargonKey, { title: [string, string]; body: [string, string]; meta: [string, string] }> = {
-        ttft: {
-            title: ['TTFT (Time To First Token)', '首字延迟 (TTFT)'],
-            body: [
-                'How long you wait from sending a prompt until the model outputs its very first token.',
-                '从发出请求到模型开始输出第一个字所等待的时间。',
-            ],
-            meta: [
-                'Includes prompt prefill & queue wait; hitting warm prompt cache usually lowers TTFT.',
-                '包含提示词预填充与排队时间；命中热缓存通常可显著缩短首字等待。',
-            ],
-        },
-        'dual-cap': {
-            title: ['Auto-Compaction Limit vs Native Ceiling', '自动压缩上限 vs 原生窗口上限'],
-            body: [
-                'Antigravity automatically compacts older turns once context reaches the Effective Budget, well before the model\'s physical Native Ceiling fills up.',
-                '对话达到「自动压缩上限（有效预算）」时，Antigravity 会提前自动压缩历史上下文，早于底层模型的「原生窗口上限」耗尽。',
-            ],
-            meta: [
-                'Progress percentages are measured against the Effective Budget (compaction ceiling).',
-                '进度百分比默认按自动压缩上限（有效预算）计算。',
-            ],
-        },
-        'session-cost': {
-            title: ['API Reference Cost', 'API 参考费用'],
-            body: [
-                'Estimated equivalent API spend for your token usage at public model rates — shown for value reference, not your actual subscription bill.',
-                '按公开 API 单价折算的参考费用，仅用于衡量用量价值，不代表你的实际订阅账单扣费。',
-            ],
-            meta: [
-                'In "Est. via Base Model" mode, legacy Orchestrator calls are estimated using their underlying base model\'s public rate card.',
-                '开启「按底座估算」时，无独立公开价目表的编排模型将按其底层底座模型的官方单价估算（可在设置中切换严格模式）。',
-            ],
-        },
-    };
-    const item = copy[key];
-    const title = tBi(item.title[0], item.title[1]);
-    const body = tBi(item.body[0], item.body[1]);
-    const meta = tBi(item.meta[0], item.meta[1]);
-    const attrs = richTipAttrs({
-        key: `overview:jargon:${key}`,
-        title,
-        body,
-        meta,
-        pin: true,
-    });
+    const [te, tz, be, bz] = JARGON_MAP[key];
+    const title = tBi(te, tz);
+    const body = tBi(be, bz);
+    const attrs = richTipAttrs({ key: `overview:jargon:${key}`, title, body, pin: true });
     return `<button type="button" class="jargon-tip" data-jargon="${key}"${attrs} aria-label="${esc(`${title}: ${body}`)}">?</button>`;
 }
 
+const TIER_200K_NOTICE_EN = 'For Antigravity subscriptions, crossing 200k does NOT charge extra money or hard-truncate your conversation — it is an API reference cost & quality heads-up.';
+const TIER_200K_NOTICE_ZH = '对 Antigravity 订阅用户而言，超过 200k 不会额外扣费，也不会强制截断会话，仅作 API 参考费用与质量提醒。';
+const CACHE_REUSE_PREFIX_EN = 'Real server-side Prompt Cache reuse: ';
+const CACHE_REUSE_PREFIX_ZH = '真实服务端提示词缓存复用：';
+
+const OVERVIEW_GLOSSARY_CATALOG = `Auto-Compaction Limit vs Native Ceiling\t自动压缩上限 vs 原生窗口上限\tEffective Budget triggers auto-compaction; Native Ceiling is the model's physical window.\t自动压缩上限触发旧对话总结；原生窗口上限为模型物理容量。
+200k Long-Context Tier\t200k 长上下文阶梯\tPublic API rates double above 200k input tokens. {t200e}\t公开 API 超过 200k 单价通常翻倍。{t200z}
+Prompt Cache (Warm / Partial / Cold Start)\t提示词缓存（热缓存启动 / 部分命中 / 冷启动）\t{cpe}Warm ≥70%, Partial 10%–70%, Cold <10% (first turn / >5m idle / model switch).\t{cpz}热缓存启动 ≥70%，部分命中 10%–70%，冷启动 <10%（首轮 / 闲置超 5 分钟 / 切换模型）。
+TTFT & Speed (Short Sample)\t首字延迟 (TTFT) 与生成速度（短样本）\tTTFT is wait until first token; calls <16 tokens or <0.3s show Short sample.\t首字延迟为吐字等待耗时；输出不足 16 tokens 或耗时不足 0.3s 记为短样本。
+Quota Runway\t配额续航预测\tProjects pool depletion using a 45-minute rolling burn slope.\t基于 45 分钟滚动窗口消耗斜率预估配额池能否撑到重置。
+API Reference Cost\tAPI 参考费用\tPublic API rate estimate for value reference (not your subscription bill).\t按公开 API 单价折算的参考费用，并非实际订阅账单。`;
+
 function buildOverviewGlossaryHtml(): string {
-    const entries: Array<{ termEn: string; termZh: string; descEn: string; descZh: string }> = [
-        {
-            termEn: 'Auto-Compaction Limit vs Native Ceiling',
-            termZh: '自动压缩上限 vs 原生窗口上限',
-            descEn: 'Effective Budget is where Antigravity auto-compacts older messages; Native Ceiling is the underlying model\'s full physical context window.',
-            descZh: '「自动压缩上限（有效预算）」是 Antigravity 自动总结旧对话的触发线；「原生窗口上限」是底层模型本身的物理最大上下文容量。',
-        },
-        {
-            termEn: '200k Long-Context Tier',
-            termZh: '200k 长上下文阶梯',
-            descEn: '200k input tokens is the standard API long-context tier line where public API list prices double and latency/attention degradation increase. For Antigravity subscription users, crossing 200k does NOT charge extra money or hard-truncate your conversation — it is purely an API reference cost & speed/quality heads-up.',
-            descZh: '200k 输入 Token 是公开 API 的标准长上下文分界线（超过后公开 API 单价通常翻倍，且响应变慢、长文注意力更易衰减）。对 Antigravity 订阅用户而言，超过 200k 不会额外扣费，也不会强制截断会话，仅作为 API 参考费用与速度/质量提醒。',
-        },
-        {
-            termEn: 'Prompt Cache (Warm / Partial / Cold Start)',
-            termZh: '提示词缓存（热缓存启动 / 部分命中 / 冷启动）',
-            descEn: 'Reflects real server-side Prompt Cache reuse reported by local telemetry: Warm ≥70% reuses cached history for faster first token & lower API reference cost; Partial 10%–70% happens after edits or compaction; Cold <10% occurs on the first turn, >5m idle expiry, or a model switch when the prefix must be re-read.',
-            descZh: '反映本地遥测上报的真实服务端提示词缓存复用：热缓存启动（≥70%）直接复用已缓存历史，首字更快且 API 参考费用更低；部分命中（10%–70%）见于提示词改动或压缩后的部分复用；冷启动（<10%）见于首轮对话、闲置超 5 分钟缓存过期或切换模型，需重新读取前缀。',
-        },
-        {
-            termEn: 'TTFT & Speed (Short Sample)',
-            termZh: '首字延迟 (TTFT) 与生成速度（短样本）',
-            descEn: 'TTFT is wait time before the first token; Speed measures streaming throughput (calls <16 tokens or <0.3s are labeled Short sample to avoid noisy spikes).',
-            descZh: '首字延迟是从发问到吐出首字的耗时；生成速度衡量流式吞吐（输出不足 16 tokens 或耗时不足 0.3s 时记为「短样本」以防抖动失真）。',
-        },
-        {
-            termEn: 'Quota Runway',
-            termZh: '配额续航预测',
-            descEn: 'Projects whether a shared quota pool will last until its next reset using the consumption slope over a 45-minute rolling window.',
-            descZh: '基于最近 45 分钟滚动窗口的配额消耗斜率，预估共享配额池能否撑到下次重置。',
-        },
-        {
-            termEn: 'API Reference Cost & Base-Model Estimation',
-            termZh: 'API 参考费用与按底座估算',
-            descEn: 'Estimates equivalent API spend at public rates (not your subscription bill). In mapped mode, legacy Orchestrator calls use their underlying base model\'s official rate.',
-            descZh: '按公开 API 单价估算的参考费用（并非实际订阅账单）。在「按底座估算」模式下，编排模型按其底层底座模型的官方单价折算。',
-        },
-        {
-            termEn: 'GM Data (Model Telemetry)',
-            termZh: 'GM 数据（模型调用遥测）',
-            descEn: 'Generator Metadata emitted by Antigravity for every LLM request, providing measured tokens, latency, prompt cache, and call credits.',
-            descZh: 'Antigravity 为每次模型请求记录的底层生成元数据（Generator Metadata），提供实测 Token、延迟、缓存与积分明细。',
-        },
-    ];
-    const itemsHtml = entries.map(e => `
-        <div class="overview-glossary-entry">
-            <dt>${tBiHtml(e.termEn, e.termZh)}</dt>
-            <dd>${tBiHtml(e.descEn, e.descZh)}</dd>
-        </div>`).join('');
-    return `<details id="overview-glossary" class="overview-details overview-glossary" data-state-key="overview-glossary">
-        <summary><span>${tBiHtml('Core metrics quick reference', '核心指标速查')}</span></summary>
-        <dl class="overview-glossary-list">${itemsHtml}</dl>
-    </details>`;
+    const itemsHtml = OVERVIEW_GLOSSARY_CATALOG.split('\n').map(line => {
+        const [te, tz, de, dz] = line.split('\t');
+        const en = de.replace('{t200e}', () => TIER_200K_NOTICE_EN).replace('{cpe}', () => CACHE_REUSE_PREFIX_EN);
+        const zh = dz.replace('{t200z}', () => TIER_200K_NOTICE_ZH).replace('{cpz}', () => CACHE_REUSE_PREFIX_ZH);
+        return `<div class="overview-glossary-entry"><dt>${tBiHtml(te, tz)}</dt><dd>${tBiHtml(en, zh)}</dd></div>`;
+    }).join('');
+    return `<details id="overview-glossary" class="overview-details overview-glossary" data-state-key="overview-glossary"><summary><span>${tBiHtml('Core metrics quick reference', '核心指标速查')}</span></summary><dl class="overview-glossary-list">${itemsHtml}</dl></details>`;
 }
 
 // ─── Overview Rendering Helpers ──────────────────────────────────────────────
@@ -568,6 +511,403 @@ function contextMeterTone(percent: number): MeterTone {
     if (percent >= 80) { return 'attention'; }
     if (percent >= 65) { return 'warn'; }
     return 'default';
+}
+
+function observationHealthTone(proj: SurfaceObservationProjection): MeterTone {
+    if (proj.isIncomplete) { return 'default'; }
+    if (
+        proj.healthStatus === 'overflow'
+        || proj.healthStatus === 'high_pressure'
+        || proj.compactionWarningLevel === 'critical'
+        || proj.compactionWarningLevel === 'overflow'
+    ) {
+        return 'attention';
+    }
+    if (proj.healthStatus === 'elevated' || proj.compactionWarningLevel === 'elevated') {
+        return 'warn';
+    }
+    return 'default';
+}
+
+function buildObservationMarkersHtml(
+    label: string,
+    proj: SurfaceObservationProjection,
+    watermarks: ContextDualWatermark | null,
+): string {
+    const tone = observationHealthTone(proj);
+    const baseMeter = meter(label, proj.geometryFillPct, proj.primaryPctText, tone);
+    const markerItems: ContextThresholdMarker[] = proj.markers ? [...proj.markers] : [];
+    const ticks: string[] = [];
+    const pills: string[] = [];
+
+    for (const mk of markerItems) {
+        const leftPct = Math.max(2, Math.min(100, mk.positionPct));
+        const is200k = mk.id === 'tier_200k';
+        const isCompaction = mk.id === 'compaction_limit';
+        const tickCls = is200k
+            ? `is-tier-200k${mk.exceeded ? ' is-exceeded' : ''}`
+            : (isCompaction ? 'is-compaction-cap' : '');
+        const wmAttr = is200k ? 'long-context-200k' : (isCompaction ? 'compaction-limit' : mk.id);
+        const body = is200k
+            ? tBi(
+                `200k long-context tier on ${proj.actualBasis} axis (${leftPct.toFixed(1)}%).`,
+                `${proj.actualBasis === 'native' ? '原生窗口' : '自动压缩'}坐标系上的 200k 长上下文阶梯线（${leftPct.toFixed(1)}%）。`,
+            )
+            : tBi(
+                `${mk.label} (${formatCompactTokens(mk.tokens)}) positioned at ${leftPct.toFixed(1)}% on the ${proj.actualBasis} axis.`,
+                `${mk.label}（${formatCompactTokens(mk.tokens)}）位于${proj.actualBasis === 'native' ? '原生窗口' : '自动压缩'}坐标系的 ${leftPct.toFixed(1)}% 处。`,
+            );
+        const tickTip = richTipAttrs({
+            key: `overview:obs-marker:${mk.id}`,
+            title: mk.label,
+            body,
+        });
+        const pillTip = richTipAttrs({
+            key: `overview:obs-marker:${mk.id}`,
+            title: mk.label,
+            body,
+            focusable: true,
+        });
+        ticks.push(`<span class="overview-watermark-tick ${tickCls}" data-watermark="${esc(wmAttr)}" data-marker-axis="${esc(mk.axis)}" data-marker-pos="${leftPct.toFixed(1)}" style="left:${leftPct.toFixed(1)}%"${tickTip} aria-hidden="true"></span>`);
+        if (is200k) {
+            const rem200k = proj.usedTokens !== null ? Math.max(0, mk.tokens - proj.usedTokens) : 0;
+            pills.push(`<span class="overview-watermark-pill${mk.exceeded ? ' is-tier-exceeded' : ''}" data-watermark-pill="long-context-200k"${pillTip}>${
+                mk.exceeded
+                    ? tBiHtml('> 200k Tier', '已超 200k 阶梯')
+                    : `${tBiHtml('200k Tier', '200k 阶梯')} · ${esc(formatCompactTokens(rem200k))} ${tBiHtml('left', '剩余')}`
+            }</span>`);
+        } else if (isCompaction && proj.denominatorTokens !== null) {
+            pills.push(`<span class="overview-watermark-pill" data-watermark-pill="compaction-limit"${pillTip}>${tBiHtml('Compaction', '自动压缩上限')} ${esc(formatCompactTokens(mk.tokens))} / ${tBiHtml('Native', '原生上限')} ${esc(formatCompactTokens(proj.denominatorTokens))}</span>`);
+        }
+    }
+
+    if (ticks.length === 0 && pills.length === 0) {
+        if (proj.actualBasis === 'compaction' && watermarks) {
+            return buildDualWatermarkMeterHtml(label, proj.geometryFillPct, proj.primaryPctText, tone, watermarks);
+        }
+        return baseMeter;
+    }
+
+    return `<div class="overview-meter-wrap" data-dual-watermark="true" data-marker-axis="${esc(proj.actualBasis)}">
+        ${baseMeter}
+        <div class="overview-meter-markers">${ticks.join('')}</div>
+    </div>
+    ${pills.length > 0 ? `<div class="overview-watermark-meta">${pills.join('')}</div>` : ''}`;
+}
+
+function buildD9SelectionBannersHtml(telemetry?: OverviewExtras): string {
+    if (!telemetry) { return ''; }
+    const banners: string[] = [];
+    if (telemetry.inspectedMemberId) {
+        const node = telemetry.swarmTopology?.nodesById.get(telemetry.inspectedMemberId);
+        const member = telemetry.swarmOverview?.members.find(row => row.cascadeId === telemetry.inspectedMemberId);
+        const label = member?.memberName || node?.memberName || telemetry.inspectedMemberLabel?.trim() || telemetry.inspectedMemberId.slice(0, 8);
+        const root = (member?.isCoordinator ?? node?.isCoordinator) || (!member && !node && telemetry.observation?.subjectKind === 'main');
+        const measured = telemetry.observation?.subjectCascadeId === telemetry.inspectedMemberId && telemetry.observation?.usedTokens != null;
+        const unavailable = !measured && telemetry.lockPendingUnavailable;
+        const rootNote = telemetry.lockedRootId && !root
+            ? ` <span class="overview-d9-root-tag">${tBiHtml('Main session locked', '主会话已锁定')}</span>`
+            : '';
+        banners.push(`<div id="swarm-inspection-banner" tabindex="-1" class="overview-d9-banner is-inspect is-sticky" role="status" data-inspect-banner="true" data-inspected-member="${esc(telemetry.inspectedMemberId)}" data-subject-kind="${root ? 'main' : 'worker'}">
+            <span class="overview-d9-banner-text"><span class="swarm-role-badge is-worker">${root ? tHtml('swarm.rootLabel') : tHtml('swarm.inspectedWorker')}</span> <strong class="swarm-member-name">${esc(label)}</strong>${rootNote}${unavailable ? ` · ${tHtml('swarm.readUnavailable')}` : ''}</span>
+            <button type="button" class="action-btn" data-action="clearInspect">${tHtml('swarm.backToMain')}</button>
+        </div>`);
+    }
+    if (telemetry.lockPendingUnavailable && telemetry.lockedRootId && !telemetry.readableMemberIds?.has(telemetry.lockedRootId)) {
+        banners.push(`<div class="overview-d9-banner is-lock-pending" role="status" data-lock-pending="true" data-locked-root="${esc(telemetry.lockedRootId ?? '')}">
+            <span class="overview-d9-banner-text"><span class="swarm-phase-badge is-warn">${tHtml('swarm.pendingUnavailable')}</span> <span>${tBiHtml('Locked root is temporarily unavailable (lock preserved).', '已锁定的主会话暂不可用（锁定锚点已保留）。')}</span></span>
+        </div>`);
+    }
+    if (telemetry.retargetOfferId) {
+        const offerLabel = telemetry.retargetOfferTitle?.trim() || telemetry.retargetOfferId.slice(0, 8);
+        banners.push(`<div class="overview-d9-banner is-retarget" role="status" data-retarget-banner="true" data-retarget-offer="${esc(telemetry.retargetOfferId)}">
+            <span class="overview-d9-banner-text">${tHtml('swarm.retargetPrompt')}: <strong class="swarm-member-name">${esc(offerLabel)}</strong></span>
+            <button type="button" class="action-btn" data-action="retargetLockedRoot" data-cascade-id="${esc(telemetry.retargetOfferId)}">${tHtml('swarm.retarget')}</button>
+        </div>`);
+    }
+    return banners.join('');
+}
+
+export function deriveSwarmOverviewFromTopology(
+    topo: SwarmTopologySnapshot | null | undefined,
+    activeCascadeId: string | undefined,
+    inspectedMemberId: string | null | undefined,
+    lockedRootId: string | null | undefined,
+    groupCost?: SwarmGroupCostSummary | null,
+): SwarmOverviewDisplayData | null {
+    if (!topo || topo.groupsByRootId.size === 0) { return null; }
+    let selectedGroup = null;
+    const probeIds = [inspectedMemberId, activeCascadeId, lockedRootId].filter((v): v is string => Boolean(v));
+    for (const id of probeIds) {
+        const node = topo.nodesById.get(id);
+        if (node && topo.groupsByRootId.has(node.rootId)) {
+            selectedGroup = topo.groupsByRootId.get(node.rootId)!;
+            break;
+        }
+        if (topo.groupsByRootId.has(id)) {
+            selectedGroup = topo.groupsByRootId.get(id)!;
+            break;
+        }
+    }
+    if (!selectedGroup) { return null; }
+    const cost = groupCost?.rootId === selectedGroup.rootId ? groupCost : null;
+    const ids = Array.from(new Set([...selectedGroup.coordinatorIds, ...selectedGroup.memberIds]));
+    const members: SwarmMemberLiveRow[] = [];
+    for (const id of ids) {
+        const n = topo.nodesById.get(id);
+        if (!n) { continue; }
+        const ledger = cost?.directCostByMember[n.cascadeId];
+        members.push({
+            cascadeId: n.cascadeId,
+            memberName: n.memberName || n.cascadeId.slice(0, 8),
+            role: n.assignedRole,
+            isCoordinator: Boolean(n.isCoordinator || n.cascadeId === selectedGroup.rootId),
+            relationshipKind: n.relationshipKind,
+            phase: n.phase,
+            killed: n.killed,
+            assignedModel: n.assignedModel ?? null,
+            measuredModel: n.measuredModel ?? null,
+            contextPct: n.contextPct ?? null,
+            directCostUsd: ledger && ledger.pricedCallCount > 0 ? ledger.directCostUsd : null,
+            recordedCalls: ledger?.callCount,
+            unpricedCalls: ledger?.unpricedCallCount,
+            lastObservedAt: n.lastObservedAt ?? null,
+            isInspected: inspectedMemberId === n.cascadeId,
+            isLockedRoot: lockedRootId === n.cascadeId,
+        });
+    }
+    if (members.length === 0) { return null; }
+    return {
+        rootId: selectedGroup.rootId,
+        title: selectedGroup.title,
+        members,
+        totalMemberCount: members.length,
+        observedMemberCount: members.filter(m => m.lastObservedAt != null).length,
+        groupTotalCostUsd: cost && cost.pricedCallCount > 0 ? cost.inclusiveGroupCostUsd : null,
+        membersWithCalls: cost ? Object.values(cost.directCostByMember).filter(member => member.callCount > 0).length : undefined,
+        groupUnpricedCalls: cost?.unpricedCallCount,
+        lastSweepAtMs: topo.lastSweepAtMs,
+    };
+}
+
+export function renderSwarmMemberItemHtml(
+    m: SwarmMemberLiveRow & { depth?: number; anomalyTags?: readonly string[] },
+    options?: {
+        displayCurrency?: CurrencyInput;
+        inspectedMemberId?: string | null;
+        lockedRootId?: string | null;
+        treeMode?: boolean;
+        activeCascadeId?: string;
+        readableMemberIds?: ReadonlySet<string>;
+        groupId?: string;
+    },
+): string {
+    const lang = getLanguage();
+    const isInsp = options?.inspectedMemberId === m.cascadeId || Boolean(m.isInspected);
+    const isLocked = options?.lockedRootId === m.cascadeId || Boolean(m.isLockedRoot);
+    const pctNum = typeof m.contextPct === 'number' && Number.isFinite(m.contextPct) ? m.contextPct : null;
+    const pctStr = pctNum !== null ? `${Math.round(pctNum)}%` : '—';
+    const pctTone = pctNum !== null ? (pctNum >= 80 ? ' is-danger' : pctNum >= 65 ? ' is-warn' : ' is-good') : '';
+    const displayModel = (raw: string) => localizePickerEffortLabel(resolveModelId(raw) ?? raw, getModelDisplayName(raw), lang);
+    const modelHtml = [
+        m.assignedModel ? `<span class="swarm-model-assigned">${tHtml('swarm.assignedModel')}: ${esc(displayModel(m.assignedModel))}</span>` : '',
+        m.measuredModel ? `<span class="swarm-model-measured">${tHtml('swarm.measuredModel')}: ${esc(displayModel(m.measuredModel))}</span>` : '',
+    ].filter(Boolean).join(' ');
+    const directCostHtml = typeof m.directCostUsd === 'number' && Number.isFinite(m.directCostUsd)
+        ? `<span class="swarm-member-cost" data-member-direct-cost="true">${tHtml('swarm.directCost')}: ${esc(formatCurrencyAmount(m.directCostUsd, options?.displayCurrency))}</span>`
+        : m.recordedCalls === 0 ? `<span class="swarm-member-cost">${tHtml('swarm.noCalls')}</span>`
+        : m.unpricedCalls ? `<span class="swarm-member-cost">${tHtml('swarm.noPrice')}</span>` : '';
+    const obsHtml = typeof m.lastObservedAt === 'number' && Number.isFinite(m.lastObservedAt)
+        ? `<span class="swarm-member-obs" data-last-observed-at="${m.lastObservedAt}">${tHtml('swarm.lastObserved')}: ${esc(formatClockTime(new Date(m.lastObservedAt), lang))}</span>`
+        : '';
+    const roleLabel = m.relationshipKind === 'nested_helper' ? tBi('Nested', '嵌套助手')
+        : m.relationshipKind === 'direct_subagent' ? tBi('Subagent', '子智能体')
+            : m.relationshipKind === 'fork' ? tBi('Fork', '分支')
+                : (!m.role || m.role.toLowerCase() === 'worker' ? tBi('Worker', '成员') : m.role);
+    const roleHtml = m.isCoordinator
+        ? `<span class="swarm-role-badge is-root">${tHtml('swarm.rootLabel')}</span>`
+        : `<span class="swarm-role-badge">${esc(roleLabel)}</span>`;
+    const anomalyHtml = (m.anomalyTags || []).map(tag => `<span class="swarm-phase-badge is-warn">${esc(tag)}</span>`).join('');
+    const isCurrent = m.cascadeId === options?.activeCascadeId;
+    const readable = options?.readableMemberIds?.has(m.cascadeId) === true;
+    const memberKey = [options?.treeMode ? 'sessions' : 'overview', options?.groupId, m.cascadeId].filter(Boolean).join('-');
+    const action = isInsp
+        ? `<button type="button" class="action-btn swarm-inspect-btn" data-action="clearInspect">${tHtml('swarm.backToMain')}</button>`
+        : isCurrent
+            ? (options?.treeMode ? `<button type="button" class="action-btn swarm-inspect-btn" data-action="showCurrentMemberOverview">${tHtml('swarm.openOverview')}</button>` : '')
+            : `<button type="button" class="action-btn swarm-inspect-btn" data-action="inspectMember" data-cascade-id="${esc(m.cascadeId)}" aria-label="${esc(`${t('swarm.openOverview')}: ${m.memberName}`)}">${tHtml('swarm.openOverview')}</button>`;
+    const phaseLabels: Record<string, [string, string]> = {
+        RUNNING: ['Running', '运行中'], WORKING: ['Working', '工作中'], WAITING: ['Waiting', '等待中'],
+        IDLE: ['Idle', '空闲'], KILLED: ['Terminated', '已终止'], COMPLETED: ['Completed', '已完成'],
+        FAILED: ['Failed', '失败'], CANCELLED: ['Cancelled', '已取消'], STOPPED: ['Stopped', '已停止'],
+    };
+    const phase = m.killed ? 'KILLED' : m.phase ?? '';
+    const phaseLabel = Object.prototype.hasOwnProperty.call(phaseLabels, phase) ? tBiHtml(...phaseLabels[phase]) : esc(phase);
+    const detailId = `swarm-detail-${esc(memberKey)}`;
+    const itemCls = options?.treeMode ? 'swarm-tree-node' : 'swarm-member-row';
+    const dataAttr = options?.treeMode
+        ? `data-swarm-node="${esc(m.cascadeId)}" data-swarm-depth="${m.depth ?? 0}" style="--swarm-depth:${m.depth ?? 0}"`
+        : `data-swarm-member="${esc(m.cascadeId)}"`;
+    return `<li class="${itemCls}${isInsp ? ' is-inspected' : ''}${m.killed ? ' is-killed' : ''}" ${dataAttr}>
+        <details class="swarm-member-details" id="${detailId}">
+            <summary id="${detailId}-toggle"><span class="swarm-member-name">${esc(m.memberName)}</span>
+                <span class="swarm-member-tags">${roleHtml}${isLocked ? `<span class="swarm-phase-badge is-root-lock">${tBiHtml('Locked', '已锁定')}</span>` : ''}${phaseLabel ? `<span class="swarm-phase-badge${m.killed ? ' is-killed' : ''}">${phaseLabel}</span>` : ''}${anomalyHtml}${isCurrent ? `<span class="swarm-role-badge">${tBiHtml('Current', '当前查看')}</span>` : ''}</span>
+                <span class="swarm-summary-label">${tHtml('swarm.inspect')}</span></summary>
+            <div class="swarm-member-meta">
+                ${pctNum !== null ? `<span class="swarm-member-pct${pctTone}">${tBiHtml('Context', '上下文')} ${esc(pctStr)}</span>` : ''}
+                ${modelHtml}${directCostHtml}${obsHtml}
+            </div>
+            ${!readable && !isCurrent ? `<p class="swarm-member-note">${tHtml('swarm.noTrajectory')}</p>` : ''}
+            ${action ? `<div class="swarm-member-actions">${action}<button type="button" data-action="cancelMemberNavigation" class="action-btn swarm-inspect-btn" hidden>${tBiHtml('Cancel', '取消')}</button><span role="status" class="swarm-inspect-feedback"></span></div>` : ''}
+        </details></li>`;
+
+}
+
+export function renderSwarmRecordedCost(swarm: SwarmOverviewDisplayData, currency?: CurrencyInput): string {
+    const parts: string[] = [];
+    if (typeof swarm.groupTotalCostUsd === 'number' && Number.isFinite(swarm.groupTotalCostUsd)) {
+        parts.push(`<span>${tHtml('swarm.groupCost')}: <strong>${esc(formatCurrencyAmount(swarm.groupTotalCostUsd, currency))}</strong></span>`);
+    }
+    if (swarm.membersWithCalls !== undefined) {
+        parts.push(`<span>${tHtml('swarm.costCoverage')} ${swarm.membersWithCalls}/${swarm.totalMemberCount ?? swarm.members.length}</span>`);
+    }
+    if (swarm.groupUnpricedCalls) {
+        parts.push(`<span class="swarm-unpriced-tag">${tHtml('swarm.unpricedCalls')}: ${swarm.groupUnpricedCalls}</span>`);
+    }
+    return parts.join(' · ');
+}
+
+export function buildSwarmLiveStripHtml(
+    swarm: SwarmOverviewDisplayData | null | undefined,
+    options?: {
+        displayCurrency?: CurrencyInput;
+        inspectedMemberId?: string | null;
+        lockedRootId?: string | null;
+        readableMemberIds?: ReadonlySet<string>;
+        activeCascadeId?: string;
+    },
+): string {
+    if (!swarm || !Array.isArray(swarm.members) || swarm.members.length === 0) { return ''; }
+    const totalMembers = swarm.totalMemberCount ?? swarm.members.length;
+    const observedMembers = swarm.observedMemberCount ?? swarm.members.filter(m => m.lastObservedAt != null).length;
+    const isPartial = Boolean(swarm.partialCoverage || observedMembers < totalMembers);
+    const partialBadgeHtml = isPartial
+        ? `<span class="swarm-partial-badge" data-swarm-partial-coverage="true">${tHtml('swarm.partialCoverage')}${observedMembers > 0 ? ` (${observedMembers}/${totalMembers})` : ''}</span>`
+        : '';
+    const costSummary = renderSwarmRecordedCost(swarm, options?.displayCurrency);
+    const groupCostHtml = costSummary ? `<div class="swarm-cost-summary" data-swarm-group-cost="true">${costSummary}</div>` : '';
+    const sortedMembers = [...swarm.members].sort((a, b) =>
+        (Number(Boolean(b.isCoordinator)) - Number(Boolean(a.isCoordinator)))
+        || (Number(Boolean(a.killed)) - Number(Boolean(b.killed)))
+        || a.memberName.localeCompare(b.memberName),
+    );
+    const renderRows = (members: SwarmMemberLiveRow[]) => `<ul class="swarm-member-list">${members.map(m => renderSwarmMemberItemHtml(m, options)).join('')}</ul>`;
+    const visible = sortedMembers.filter(m => !m.killed || m.isInspected || m.isCoordinator || m.cascadeId === options?.activeCascadeId);
+    const archived = sortedMembers.filter(m => !visible.includes(m));
+    const rowsHtml = renderRows(visible) + (archived.length ? `<details class="swarm-ended" id="overview-ended-${esc(swarm.rootId)}"><summary>${tBiHtml('Terminated members', '已终止成员')} (${archived.length})</summary>${renderRows(archived)}</details>` : '');
+    return `<section class="overview-swarm-strip" id="overviewSwarmStrip" data-swarm-live-strip="true" aria-labelledby="overview-swarm-heading"><div class="overview-swarm-head"><h4 id="overview-swarm-heading">${tHtml('swarm.liveTracking')} <span class="swarm-count-pill">${totalMembers}</span></h4>${partialBadgeHtml}</div>${groupCostHtml}${rowsHtml}</section>`;
+}
+
+function ovSegSwitch(
+    settingKey: string,
+    activeValue: string,
+    ariaLabel: string,
+    items: ReadonlyArray<{ val: string; labelHtml: string; tip?: string }>,
+    extraCls = '',
+): string {
+    const btns = items.map(it => {
+        const active = activeValue === it.val;
+        return `<button type="button" class="ov-seg-btn${active ? ' is-active' : ''}" data-action="setOverviewSetting" data-setting-key="${settingKey}" data-setting-value="${it.val}" aria-pressed="${active}"${it.tip || ''}>${it.labelHtml}</button>`;
+    }).join('');
+    return `<span class="ov-seg-switch${extraCls ? ` ${extraCls}` : ''}" role="group" data-setting-switch="${settingKey}" aria-label="${esc(ariaLabel)}">${btns}</span>`;
+}
+
+function buildCacheTtlBadgeHtml(cacheTtl: PromptCacheTtlEvaluation | null | undefined): string {
+    if (!cacheTtl) { return ''; }
+    let cls = 'is-unknown';
+    let labelHtml = tHtml('cache.ttl5mHeuristic');
+    if (cacheTtl.shouldResetHeuristic || cacheTtl.clockAnomaly !== 'none') {
+        cls = 'is-unknown';
+        labelHtml = tHtml('cache.cause.clockJump');
+    } else if (cacheTtl.ttlEstimateState === 'warm') {
+        cls = 'is-warm';
+        labelHtml = tHtml('cache.ttlWarm');
+    } else if (cacheTtl.ttlEstimateState === 'cooling') {
+        cls = 'is-cooling';
+        labelHtml = tHtml('cache.ttlExpiring');
+    } else if (cacheTtl.ttlEstimateState === 'cold') {
+        cls = 'is-cold';
+        labelHtml = tHtml('cache.ttlColdPredicted');
+    }
+    const remSec = typeof cacheTtl.remainingTtlSeconds === 'number' && Number.isFinite(cacheTtl.remainingTtlSeconds)
+        ? Math.max(0, Math.round(cacheTtl.remainingTtlSeconds))
+        : null;
+    const countdownText = remSec !== null && !cacheTtl.shouldResetHeuristic && cacheTtl.ttlEstimateState !== 'cold'
+        ? ` · ${Math.floor(remSec / 60)}:${String(remSec % 60).padStart(2, '0')}`
+        : '';
+    const tipAttrs = richTipAttrs({
+        key: 'overview:cache-ttl-5m',
+        title: t('cache.ttl5mHeuristic'),
+        body: cacheTtl.hasMeasuredCacheTelemetry && cacheTtl.measuredReusePct !== null
+            ? `${t('cache.measuredReuse')}: ${cacheTtl.measuredReusePct.toFixed(1)}%`
+            : t('cache.unreported'),
+        meta: t('cache.ttl5mHeuristic'),
+        focusable: true,
+    });
+    return `<span class="cache-ttl-badge ${cls}" data-cache-ttl-state="${esc(cacheTtl.ttlEstimateState)}" data-cache-ttl-source="local_ttl_heuristic"${remSec !== null ? ` data-ttl-remaining-sec="${remSec}"` : ''}${tipAttrs}>${labelHtml}${esc(countdownText)}</span>`;
+}
+
+function buildHandoffV2SectionHtml(
+    preview: HandoffV2PreviewData | null | undefined,
+    activeCascadeId: string | undefined,
+    dataRevision: number,
+    showBudgetWarning: boolean,
+): string {
+    const subjectId = preview?.subjectCascadeId || activeCascadeId || '';
+    const rev = preview?.dataRevision ?? dataRevision;
+    const isVisible = Boolean(preview && preview.markdown);
+    const warningHtml = showBudgetWarning
+        ? `<div class="ctx-budget-warning-bar" data-context-budget-warning="true" role="status">
+            <span>${tHtml('context.compactionWarning')}</span>
+            <button type="button" class="ctx-action-btn is-handoff-v2" id="previewHandoffV2Btn" data-action="previewHandoffV2" data-cascade-id="${esc(subjectId)}" data-data-revision="${rev}">${ICON.file} <span>${tHtml('handoff.previewTitle')}</span></button>
+        </div>`
+        : `<div class="ctx-handoff-v2-trigger-row">
+            <button type="button" class="ctx-action-btn is-handoff-v2" id="previewHandoffV2Btn" data-action="previewHandoffV2" data-cascade-id="${esc(subjectId)}" data-data-revision="${rev}">${ICON.file} <span>${tHtml('handoff.previewTitle')}</span></button>
+        </div>`;
+
+    const boxHtml = `<section class="handoff-preview-box" id="handoffV2PreviewBox" data-handoff-preview="true" data-subject-cascade-id="${esc(subjectId)}" data-data-revision="${rev}"${isVisible ? '' : ' hidden'} aria-labelledby="handoff-v2-heading">
+        <div class="handoff-preview-head">
+            <strong id="handoff-v2-heading">${tHtml('handoff.previewTitle')}</strong>
+            <div class="handoff-preview-actions">
+                <button type="button" class="action-btn" data-action="copyHandoffPreviewText">${ICON.copy} <span>${tHtml('action.copyHandoffPrompt')}</span></button>
+                <button type="button" class="action-btn" data-action="closeHandoffPreview" aria-label="${esc(tBi('Close preview', '关闭预览'))}">×</button>
+            </div>
+        </div>
+        <p class="handoff-preview-notice">${tHtml('handoff.readOnlyNotice')}</p>
+        <textarea id="handoffV2PreviewText" class="handoff-preview-text" readonly rows="6" aria-label="${esc(t('handoff.previewTitle'))}">${esc(preview?.markdown || '')}</textarea>
+    </section>`;
+
+    return `${warningHtml}${boxHtml}`;
+}
+
+function buildCompactionRecoveryBriefHtml(brief: CompactionRecoveryBriefData | null | undefined): string {
+    if (!brief || brief.dismissed || !brief.summaryText) { return ''; }
+    const deltaText = typeof brief.beforeTokens === 'number' && typeof brief.afterTokens === 'number'
+        ? `${formatCompactTokens(brief.beforeTokens)} → ${formatCompactTokens(brief.afterTokens)}${brief.savedTokens ? ` (−${formatCompactTokens(brief.savedTokens)})` : ''}`
+        : '';
+    return `<section class="recovery-brief-card" id="compactionRecoveryBrief" data-recovery-brief="true" data-event-key="${esc(brief.eventKey)}" data-read-only="true" aria-labelledby="recovery-brief-heading">
+        <div class="recovery-brief-head">
+            <div>
+                <h3 id="recovery-brief-heading">${tHtml('compaction.recoveryTitle')}</h3>
+                <p class="overview-meta">${tHtml('compaction.recoverySubtitle')}${deltaText ? ` · ${esc(deltaText)}` : ''}</p>
+            </div>
+            <div class="recovery-brief-actions">
+                <button type="button" class="action-btn" data-action="copyRecoveryBrief">${ICON.copy} <span>${tBiHtml('Copy', '复制')}</span></button>
+                <button type="button" class="action-btn" data-action="dismissRecoveryBrief" data-event-key="${esc(brief.eventKey)}">${tHtml('compaction.dismissBrief')}</button>
+            </div>
+        </div>
+        <pre class="recovery-brief-body">${esc(brief.summaryText)}</pre>
+    </section>`;
 }
 
 function quotaMeterTone(percent: number): MeterTone {
@@ -659,32 +999,24 @@ function dualQuotaWindowHtml(
     kind: '5h' | 'weekly',
     win: QuotaWindowSummary,
     now: number,
+    direction: QuotaDirectionMode,
 ): string {
     const labelHtml = kind === '5h' ? tBiHtml('5-Hour', '5 小时') : tBiHtml('Weekly', '每周');
     const labelPlain = kind === '5h' ? tBi('5-Hour', '5 小时') : tBi('Weekly', '每周');
     const rawFrac = win.remainingFraction;
     const validFrac = typeof rawFrac === 'number' && Number.isFinite(rawFrac) && rawFrac >= 0 && rawFrac <= 1 ? rawFrac : null;
     const unknown = validFrac === null;
-    const pctText = unknown ? tBi('Unknown', '未知') : formatQuotaWindowPercent(validFrac);
+    const displayFrac = validFrac === null ? null : direction === 'used' ? 1 - validFrac : validFrac;
+    const pctText = displayFrac === null ? tBi('Unknown', '未知') : formatQuotaWindowPercent(displayFrac);
     const pctHtml = unknown ? `<span class="overview-quota-unknown">${tBiHtml('Unknown', '未知')}</span>` : `<strong>${esc(pctText)}</strong>`;
-    const meterHtml = unknown
+    const meterHtml = displayFrac === null || validFrac === null
         ? '<div class="overview-meter is-unknown" aria-hidden="true"></div>'
-        : meter(`${groupLabel} · ${labelPlain}`, validFrac * 100, pctText, quotaMeterTone(validFrac * 100));
+        : meter(`${groupLabel} · ${labelPlain}`, displayFrac * 100, pctText, quotaMeterTone(validFrac * 100));
     const winTipAttrs = richTipAttrs({
         key: `overview:quota-win:${poolKey}:${kind}`,
         title: `${groupLabel} · ${labelPlain}`,
-        body: kind === '5h'
-            ? tBi(
-                `Short-term 5-hour rolling quota remaining: ${pctText}. Refreshes rapidly across the day.`,
-                `短期 5 小时滚动配额剩余：${pctText}，日内滚动恢复。`,
-            )
-            : tBi(
-                `Weekly cumulative quota remaining: ${pctText}. Tracks total sustained usage across the week.`,
-                `每周累计配额剩余：${pctText}，用于约束一周内的持续总用量。`,
-            ),
-        meta: win.resetTime
-            ? `${tBi('Next reset', '下次重置')}: ${formatResetAbsolute(win.resetTime)}`
-            : tBi('Reset timestamp not reported by backend.', '本地服务暂未上报该窗口的重置时间。'),
+        body: `${labelPlain} · ${direction === 'used' ? tBi('Used', '已用') : tBi('Remaining', '剩余')} ${pctText}`,
+        meta: win.resetTime ? `${tBi('Reset', '重置')}: ${formatResetAbsolute(win.resetTime)}` : undefined,
         focusable: true,
     });
     return `<div class="quota-dual-item" data-quota-window="${kind}"${winTipAttrs}>
@@ -714,7 +1046,7 @@ function cacheWarmthMeta(state: CacheState): { cls: string; html: string } | nul
         case 'warming':
             return { cls: 'is-warming', html: tBiHtml('Warming', '缓存预热中') };
         case 'cold':
-            return { cls: 'is-cold', html: tBiHtml('Cold', '冷启动（未命中）') };
+            return { cls: 'is-cold', html: tHtml('telemetry.cacheState.cold') };
         default:
             return null;
     }
@@ -751,53 +1083,31 @@ function buildCostTelemetryCell(
     if (!sessionCost && !todayCost) { return ''; }
     const costHelpTip = jargonTipHtml('session-cost');
     const modeRule = orchestratorPricingMode === 'strict'
-        ? tBi(
-            'Strict official pricing mode: only models with direct public rate cards are summed.',
-            '严格官方定价模式：仅计入拥有独立公开单价的模型调用。',
-        )
-        : tBi(
-            'Base-model estimation mode: Orchestrator calls without a separate public rate card use their underlying base model rate.',
-            '按底座估算模式：无独立公开单价的编排模型按其底层底座模型的官方单价折算。',
-        );
+        ? tBi('Strict official rate mode.', '严格官方定价模式。')
+        : tBi('Base-model estimation mode.', '按底座估算模式。');
     if (sessionCost) {
-        const subHtml = todayCost
-            ? `<span class="overview-telemetry-sub">${tBiHtml('Today', '今日')} ${esc(todayCost.display)}</span>`
-            : '';
+        const subHtml = todayCost ? `<span class="overview-telemetry-sub">${tBiHtml('Today', '今日')} ${esc(todayCost.display)}</span>` : '';
         const detailParts = [
-            sessionCost.title || `${tBi('Session', '当前会话')}: ${sessionCost.display}`,
+            sessionCost.title || `${tBi('Session', '会话')}: ${sessionCost.display}`,
             todayCost ? `${tBi('Today', '今日')}: ${todayCost.title || todayCost.display}` : '',
         ].filter(Boolean);
         const cellTipAttrs = richTipAttrs({
             key: 'overview:telemetry:cost',
             title: tBi('Session API Reference Cost', '会话 API 参考费用'),
-            body: `${tBi(
-                'Estimated API spend for this conversation at public model token rates (not your subscription bill).',
-                '按公开模型单价估算的当前会话等价 API 费用（仅作参考，并非实际订阅账单）。',
-            )}\n${detailParts.join(' · ')}`,
+            body: detailParts.join(' · '),
             meta: modeRule,
             focusable: true,
         });
-        return `<div class="overview-telemetry-cell" data-telemetry-cell="cost"${cellTipAttrs}>
-            <span class="overview-telemetry-label">${tBiHtml('Session Cost', '会话费用')}${costHelpTip}</span>
-            <strong class="overview-telemetry-value">${esc(sessionCost.display)}</strong>
-            ${subHtml}
-        </div>`;
+        return `<div class="overview-telemetry-cell" data-telemetry-cell="cost"${cellTipAttrs}><span class="overview-telemetry-label">${tBiHtml('Session Cost', '会话费用')}${costHelpTip}</span><strong class="overview-telemetry-value">${esc(sessionCost.display)}</strong>${subHtml}</div>`;
     }
-    const todayDetail = todayCost!.title || todayCost!.display;
     const cellTipAttrs = richTipAttrs({
         key: 'overview:telemetry:cost',
         title: tBi('Today API Reference Cost', '今日 API 参考费用'),
-        body: `${tBi(
-            'Estimated cumulative API spend across today\'s recorded model calls (not your subscription bill).',
-            '按公开模型单价估算的今日累计等价 API 费用（仅作参考，并非实际订阅账单）。',
-        )}\n${tBi('Today', '今日')}: ${todayDetail}`,
+        body: todayCost!.title || todayCost!.display,
         meta: modeRule,
         focusable: true,
     });
-    return `<div class="overview-telemetry-cell" data-telemetry-cell="cost"${cellTipAttrs}>
-        <span class="overview-telemetry-label">${tBiHtml('Today Cost', '今日费用')}${costHelpTip}</span>
-        <strong class="overview-telemetry-value">${esc(todayCost!.display)}</strong>
-    </div>`;
+    return `<div class="overview-telemetry-cell" data-telemetry-cell="cost"${cellTipAttrs}><span class="overview-telemetry-label">${tBiHtml('Today Cost', '今日费用')}${costHelpTip}</span><strong class="overview-telemetry-value">${esc(todayCost!.display)}</strong></div>`;
 }
 
 function telemetryStrip(
@@ -806,12 +1116,18 @@ function telemetryStrip(
     todayCostUsd?: number,
     options?: {
         speedSample?: SpeedSampleEvaluation | null;
+        observation?: SurfaceObservationProjection | null;
         displayCurrency?: CurrencyInput;
         orchestratorPricingMode?: OrchestratorPricingMode;
+        speedMetricMode?: SpeedMetricMode;
+        cacheTtl?: PromptCacheTtlEvaluation | null;
     },
 ): string {
-    const { primary, primaryScope, speedPrimary, ttftPrimary } = snapshot;
+    const { primary, primaryScope, ttftPrimary } = snapshot;
+    const speedMode: SpeedMetricMode = options?.speedMetricMode === 'e2e' ? 'e2e' : 'decode';
 
+    const speedPrimary = options?.observation ? options.observation.displaySpeedTps
+        : speedMode === 'e2e' ? primary.latestEndToEndTokPerSec ?? primary.weightedEndToEndTokPerSec : snapshot.speedPrimary;
     // 1. Speed (with sparse-sample Short sample / Waiting TTFT guard)
     const speedSample = options?.speedSample
         ?? primary.latestSpeedSample
@@ -826,14 +1142,14 @@ function telemetryStrip(
     let speedHtml: string;
     let speedClass = '';
     let speedStateAttr = '';
-    if (speedSample?.isWaitingTtft) {
+    if (!options?.observation && speedSample?.isWaitingTtft) {
         const waitSuffix = typeof speedSample.waitingSeconds === 'number' && Number.isFinite(speedSample.waitingSeconds) && speedSample.waitingSeconds > 0
             ? ` (${speedSample.waitingSeconds.toFixed(1)}s)`
             : '';
         speedHtml = `${tBiHtml('Waiting TTFT', '等待首字')}${esc(waitSuffix)}`;
         speedClass = ' is-muted is-short-sample';
         speedStateAttr = ' data-speed-state="waiting-ttft"';
-    } else if (speedSample?.isShortSample) {
+    } else if (!options?.observation && speedSample?.isShortSample) {
         speedHtml = tBiHtml('Short sample', '短样本');
         speedClass = ' is-muted is-short-sample';
         speedStateAttr = ' data-speed-state="short-sample"';
@@ -867,19 +1183,11 @@ function telemetryStrip(
     if (primary.hasThinking && primary.weightedVisibleTokPerSec !== null) {
         speedTipParts.push(`${tBi('Visible Response Speed', '可见正文速度')}: ${formatSpeed(primary.weightedVisibleTokPerSec)}`);
     }
-    const speedLead = speedSample?.isWaitingTtft
-        ? tBi('Waiting for the model to emit its first output token.', '请求已发出，正在等待模型输出第一个字。')
-        : speedSample?.isShortSample
-            ? tBi('Latest output was too short to measure throughput reliably; showing Short sample instead of a noisy spike.', '最近一次输出过短，速度波动较大，故标记为「短样本」以防失真。')
-            : tBi('Tokens generated per second during streaming output (Visible speed excludes internal Thinking tokens).', '模型流式输出阶段每秒生成的 Token 速度（「正文速度」为剔除思考过程后的可见回复速度）。');
     const speedTipAttrs = richTipAttrs({
         key: 'overview:telemetry:speed',
-        title: tBi('Generation Speed', '生成速度'),
-        body: speedTipParts.length ? `${speedLead}\n${speedTipParts.join(' · ')}` : speedLead,
-        meta: tBi(
-            'Rule: outputTokens / streamingSeconds; flagged as Short sample when output < 16 tokens or streaming < 0.3s.',
-            '计算口径：输出 Token ÷ 流式耗时；当输出不足 16 tokens 或耗时不足 0.3s 时显示「短样本」。',
-        ),
+        title: speedMode === 'e2e' ? t('speed.e2eModelCall') : tBi('Generation Speed', '生成速度'),
+        body: speedMode === 'e2e' ? t('speed.e2eScopeHint') : speedTipParts.join(' · ') || tBi('Streaming output throughput.', '流式输出吞吐速度。'),
+        meta: speedMode === 'e2e' ? 'outputTokens / (TTFT + streamingSeconds)' : 'outputTokens / streamingSeconds',
         focusable: true,
     });
 
@@ -893,57 +1201,32 @@ function telemetryStrip(
     } else if (primary.medianTtftSeconds !== null) {
         ttftSubHtml = esc(`p50 ${formatLatency(primary.medianTtftSeconds)}`);
     }
-    const ttftTipParts: string[] = [];
-    if (primary.avgTtftSeconds !== null) {
-        ttftTipParts.push(`${tBi('Avg TTFT', '平均首字延迟')}: ${formatLatency(primary.avgTtftSeconds)}`);
-    }
-    if (primary.medianTtftSeconds !== null) {
-        ttftTipParts.push(`${tBi('Median (p50)', '中位数 (p50)')}: ${formatLatency(primary.medianTtftSeconds)}`);
-    }
-    if (primary.cachedAvgTtftSeconds !== null) {
-        ttftTipParts.push(`${tBi('Cached TTFT', '热缓存首字')}: ${formatLatency(primary.cachedAvgTtftSeconds)}`);
-    }
-    if (primary.uncachedAvgTtftSeconds !== null) {
-        ttftTipParts.push(`${tBi('Uncached TTFT', '冷启动首字')}: ${formatLatency(primary.uncachedAvgTtftSeconds)}`);
-    }
-    const ttftLead = tBi(
-        'Wait time from sending your message until the first token appears (p50 is the typical median latency).',
-        '从发出请求到看到第一个字所等待的时间（p50 表示中位数，更能反映常态体验）。',
-    );
+    const ttftTipParts = [
+        primary.avgTtftSeconds !== null ? `${tBi('Avg', '均值')}: ${formatLatency(primary.avgTtftSeconds)}` : '',
+        primary.medianTtftSeconds !== null ? `p50: ${formatLatency(primary.medianTtftSeconds)}` : '',
+        primary.cachedAvgTtftSeconds !== null ? `${tBi('Cached', '热缓存')}: ${formatLatency(primary.cachedAvgTtftSeconds)}` : '',
+        primary.uncachedAvgTtftSeconds !== null ? `${tBi('Cache Miss', '缓存未命中')}: ${formatLatency(primary.uncachedAvgTtftSeconds)}` : '',
+    ].filter(Boolean);
     const ttftTipAttrs = richTipAttrs({
         key: 'overview:telemetry:ttft',
-        title: tBi('TTFT (Time To First Token)', '首字延迟 (TTFT)'),
-        body: ttftTipParts.length ? `${ttftLead}\n${ttftTipParts.join(' · ')}` : ttftLead,
-        meta: tBi(
-            'Warm prompt cache skips re-encoding history and usually cuts TTFT sharply.',
-            '命中热缓存可跳过历史重算，通常能明显降低首字等待时间。',
-        ),
+        title: t('speed.ttft'),
+        body: ttftTipParts.join(' · ') || tBi('Wait time before first token.', '等待首字输出耗时。'),
         focusable: true,
     });
 
     // 3. Cache Hit
     const cacheHitValue = formatCachePercent(primary.tokenCacheHitRate);
-    const cacheHitClass = primary.tokenCacheHitRate !== null && primary.tokenCacheHitRate > 0
-        ? ' is-cache'
-        : ' is-muted';
+    const cacheHitClass = primary.tokenCacheHitRate !== null && primary.tokenCacheHitRate > 0 ? ' is-cache' : ' is-muted';
     const cacheHitSubHtml = primary.totalCacheReadTokens > 0
         ? esc(`${formatCompactTokens(primary.totalCacheReadTokens)} · ${primary.cachedCallCount}/${primary.totalCalls}`)
         : (primary.totalCalls > 0 ? esc(`${primary.cachedCallCount}/${primary.totalCalls}`) : '');
     const cacheHitDetail = primary.totalPromptTokens > 0
-        ? `${formatCompactTokens(primary.totalCacheReadTokens)} / ${formatCompactTokens(primary.totalPromptTokens)} tokens · ${primary.cachedCallCount}/${primary.totalCalls} ${tBi('calls hit', '次命中')}`
-        : '';
-    const cacheHitLead = tBi(
-        'Percentage of prompt tokens served from server-side prompt cache instead of being reprocessed.',
-        '直接命中服务端提示词缓存、免于重复计算的输入 Token 比例。',
-    );
+        ? `${formatCompactTokens(primary.totalCacheReadTokens)} / ${formatCompactTokens(primary.totalPromptTokens)} tokens · ${primary.cachedCallCount}/${primary.totalCalls}`
+        : tBi('Prompt tokens served from server-side cache.', '服务端提示词缓存复用占比。');
     const cacheHitTipAttrs = richTipAttrs({
         key: 'overview:telemetry:cache-hit',
         title: tBi('Prompt Cache Hit Rate', '缓存命中率'),
-        body: cacheHitDetail ? `${cacheHitLead}\n${cacheHitDetail}` : cacheHitLead,
-        meta: tBi(
-            'Formula: cacheReadTokens / (inputTokens + cacheReadTokens + cacheCreationTokens).',
-            '计算口径：缓存读取 ÷（新增输入 + 缓存读取 + 缓存创建）。',
-        ),
+        body: cacheHitDetail,
         focusable: true,
     });
 
@@ -954,36 +1237,22 @@ function telemetryStrip(
     let savedClass = '';
     let savedDetail = '';
     if (savingsFormatted !== null && primary.estCacheSavingsUsd !== null) {
-        const displaySav = currencyPreset.code === 'USD'
-            ? savingsFormatted
-            : formatCurrencyAmount(primary.estCacheSavingsUsd, options?.displayCurrency);
+        const displaySav = currencyPreset.code === 'USD' ? savingsFormatted : formatCurrencyAmount(primary.estCacheSavingsUsd, options?.displayCurrency);
         savedValueHtml = esc(displaySav);
-        const savRef = currencyPreset.code === 'USD'
-            ? savingsFormatted
-            : formatDualCurrencyAmount(primary.estCacheSavingsUsd, options?.displayCurrency);
-        savedDetail = primary.estCacheSavedTokens > 0
-            ? `${savRef} · ${formatCompactTokens(primary.estCacheSavedTokens)} tokens`
-            : savRef;
+        const savRef = currencyPreset.code === 'USD' ? savingsFormatted : formatDualCurrencyAmount(primary.estCacheSavingsUsd, options?.displayCurrency);
+        savedDetail = primary.estCacheSavedTokens > 0 ? `${savRef} · ${formatCompactTokens(primary.estCacheSavedTokens)} tokens` : savRef;
     } else if (primary.estCacheSavedTokens > 0) {
         savedValueHtml = `${esc(formatCompactTokens(primary.estCacheSavedTokens))} tokens`;
-        savedDetail = `${formatCompactTokens(primary.estCacheSavedTokens)} tokens`;
+        savedDetail = savedValueHtml;
     } else {
         savedValueHtml = '—';
         savedClass = ' is-muted';
     }
     const warmth = cacheWarmthMeta(primary.latestCacheState);
-    const savedLead = tBi(
-        'Estimated API cost (or prompt tokens) saved by reading cached prefixes at discounted rates.',
-        '因命中热缓存、以折扣单价读取历史前缀而节省的参考费用（未定价模型按节省 Token 计）。',
-    );
     const savedTipAttrs = richTipAttrs({
         key: 'overview:telemetry:cache-saved',
         title: tBi('Prompt Cache Savings', '缓存节省'),
-        body: savedDetail ? `${savedLead}\n${savedDetail}` : savedLead,
-        meta: tBi(
-            'Formula: (inputRate − cacheReadRate) × cacheReadTokens. Status reflects latest call warmth.',
-            '计算口径：（输入单价 − 缓存读取单价）× 缓存读取 Token；下方状态反映最近一次调用的缓存冷热。',
-        ),
+        body: savedDetail || tBi('Estimated cost or tokens saved via prompt cache.', '命中缓存节省的参考费用或 Token。'),
         focusable: true,
     });
     const costCellHtml = buildCostTelemetryCell(
@@ -997,14 +1266,20 @@ function telemetryStrip(
         ? tBi('Active conversation speed and prompt cache', '当前会话速度与提示词缓存')
         : tBi('Session speed and prompt cache', '会话速度与提示词缓存');
 
-    return `<div class="overview-telemetry-strip${costCellHtml ? ' has-cost' : ''}" data-telemetry-scope="${primaryScope}" role="group" aria-label="${esc(ariaLabel)}">
+    const speedModeSwitchHtml = ovSegSwitch('speedMetricMode', speedMode, t('speed.decode'), [
+        { val: 'decode', labelHtml: tBiHtml('Decode', '解码') },
+        { val: 'e2e', labelHtml: 'E2E', tip: richTipAttrs({ key: 'overview:speed:e2e-hint', title: t('speed.e2eModelCall'), body: t('speed.e2eScopeHint') }) },
+    ], 'is-inline');
+    const cacheTtlHtml = buildCacheTtlBadgeHtml(options?.cacheTtl);
+
+    return `<div class="overview-telemetry-strip${costCellHtml ? ' has-cost' : ''}" data-telemetry-scope="${primaryScope}" data-speed-mode="${speedMode}" role="group" aria-label="${esc(ariaLabel)}">
         <div class="overview-telemetry-cell" data-telemetry-cell="speed"${speedTipAttrs}${speedStateAttr}>
-            <span class="overview-telemetry-label">${tBiHtml('Speed', '生成速度')}</span>
+            <span class="overview-telemetry-label">${speedMode === 'e2e' ? tHtml('speed.e2eModelCall') : tBiHtml('Speed', '生成速度')} ${speedModeSwitchHtml}</span>
             <strong class="overview-telemetry-value${speedClass}">${speedHtml}</strong>
             ${speedSubHtml ? `<span class="overview-telemetry-sub">${speedSubHtml}</span>` : ''}
         </div>
         <div class="overview-telemetry-cell" data-telemetry-cell="ttft"${ttftTipAttrs}>
-            <span class="overview-telemetry-label">${tBiHtml('TTFT', '首字延迟')}${jargonTipHtml('ttft')}</span>
+            <span class="overview-telemetry-label">${tHtml('speed.ttft')}${jargonTipHtml('ttft')}</span>
             <strong class="overview-telemetry-value${ttftClass}">${esc(ttftValue)}</strong>
             ${ttftSubHtml ? `<span class="overview-telemetry-sub">${ttftSubHtml}</span>` : ''}
         </div>
@@ -1012,6 +1287,7 @@ function telemetryStrip(
             <span class="overview-telemetry-label">${tBiHtml('Cache Hit', '缓存命中')}</span>
             <strong class="overview-telemetry-value${cacheHitClass}">${esc(cacheHitValue)}</strong>
             ${cacheHitSubHtml ? `<span class="overview-telemetry-sub">${cacheHitSubHtml}</span>` : ''}
+            ${cacheTtlHtml}
         </div>
         <div class="overview-telemetry-cell" data-telemetry-cell="cache-saved"${savedTipAttrs}>
             <span class="overview-telemetry-label">${tBiHtml('Cache Saved', '缓存节省')}</span>
@@ -1127,19 +1403,10 @@ export function buildContextBreakdownCard(
         ? cb.compactionCheckpoints[cb.compactionCheckpoints.length - 1]
         : null;
 
-    const measureNote = getMeasurementNote(cb.measurementState, getLanguage());
-    const measureTriggerMeta = cb.measurementState === 'measured'
-        ? tBi('Trigger: reported directly by completed model generation usage.', '触发口径：最近一轮已完成模型调用并上报真实用量。')
-        : cb.measurementState === 'estimated_post_compaction'
-            ? tBi('Trigger: a compaction checkpoint happened after the last measured model call.', '触发口径：上次实测之后检测到自动压缩检查点，等待下一次实测校准。')
-            : cb.measurementState === 'estimated_rewind'
-                ? tBi('Trigger: step count dropped below prior peak (classified as rewind, not compaction).', '触发口径：对话步骤数少于历史峰值，判定为回退而非压缩。')
-                : tBi('Trigger: no completed model usage reported yet for this conversation.', '触发口径：当前会话尚未完成首次模型生成。');
     const measureBadgeTipAttrs = richTipAttrs({
         key: 'overview:ctx-measure-badge',
         title: tBi('Measurement State', '计量状态'),
-        body: measureNote,
-        meta: measureTriggerMeta,
+        body: getMeasurementNote(cb.measurementState, getLanguage()),
         focusable: true,
     });
 
@@ -1147,21 +1414,13 @@ export function buildContextBreakdownCard(
     const effCapTipAttrs = richTipAttrs({
         key: 'overview:ctx-cap:effective',
         title: tBi('Effective Budget (Compaction Limit)', '自动压缩上限（有效预算）'),
-        body: tBi(
-            `Used ${formatCompactTokens(cb.usedTokens)} of ${formatCompactTokens(cb.effectiveBudgetTokens)} tokens (${cb.effectivePct.toFixed(1)}%). Antigravity auto-compacts older turns around this threshold.`,
-            `已使用 ${formatCompactTokens(cb.usedTokens)} / ${formatCompactTokens(cb.effectiveBudgetTokens)} tokens（${cb.effectivePct.toFixed(1)}%）。接近该线时 Antigravity 会自动压缩旧对话。`,
-        ),
-        meta: tBi('Controlled by platform truncation/checkpoint budget.', '由平台检查点与截断预算决定，通常小于底层模型物理窗口。'),
+        body: `${formatCompactTokens(cb.usedTokens)} / ${formatCompactTokens(cb.effectiveBudgetTokens)} (${cb.effectivePct.toFixed(1)}%)`,
         focusable: true,
     });
     const natCapTipAttrs = richTipAttrs({
         key: 'overview:ctx-cap:native',
-        title: tBi('Native Ceiling (Model Context)', '原生窗口上限'),
-        body: tBi(
-            `Used ${formatCompactTokens(cb.usedTokens)} of ${formatCompactTokens(cb.nativeLimitTokens)} tokens (${cb.nativePct.toFixed(1)}%). This is the underlying model\'s full physical context window.`,
-            `已使用 ${formatCompactTokens(cb.usedTokens)} / ${formatCompactTokens(cb.nativeLimitTokens)} tokens（${cb.nativePct.toFixed(1)}%）。这是底层模型本身支持的物理最大上下文。`,
-        ),
-        meta: tBi('Shown for reference alongside the lower Effective Budget ceiling.', '与较早触发的「自动压缩上限」对照参考。'),
+        title: tBi('Native Ceiling', '原生窗口上限'),
+        body: `${formatCompactTokens(cb.usedTokens)} / ${formatCompactTokens(cb.nativeLimitTokens)} (${cb.nativePct.toFixed(1)}%)`,
         focusable: true,
     });
     const dualCapHtml = cb.hasDualCap ? `<div class="ctx-dual-cap-row" data-dual-cap="true">
@@ -1182,17 +1441,10 @@ export function buildContextBreakdownCard(
         ? `<div class="ctx-compaction-chip" data-compaction-saved="${latestCompaction.savedTokens}"${richTipAttrs({
             key: 'overview:ctx-compaction-saved',
             title: tBi('Compaction Checkpoint Saved', '压缩检查点节省'),
-            body: tBi(
-                `Auto-compaction summarized earlier history and reclaimed ${formatNumber(latestCompaction.savedTokens)} tokens (${formatCompactTokens(latestCompaction.beforeTokens)} → ${formatCompactTokens(latestCompaction.afterTokens)}).`,
-                `自动压缩总结了早期对话，释放了 ${formatNumber(latestCompaction.savedTokens)} tokens（${formatCompactTokens(latestCompaction.beforeTokens)} → ${formatCompactTokens(latestCompaction.afterTokens)}）。`,
-            ),
-            meta: tBi(`Observed at step #${latestCompaction.stepIndex}.`, `记录于第 #${latestCompaction.stepIndex} 步检查点。`),
+            body: `−${formatNumber(latestCompaction.savedTokens)} tokens (${formatCompactTokens(latestCompaction.beforeTokens)} → ${formatCompactTokens(latestCompaction.afterTokens)})`,
+            meta: `#${latestCompaction.stepIndex}`,
             focusable: true,
-        })}>
-            <span class="ctx-compaction-label">${tBiHtml('Compaction checkpoint saved', '压缩检查点节省')}</span>
-            <strong>−${esc(formatCompactTokens(latestCompaction.savedTokens))} tokens</strong>
-            <span class="ctx-compaction-range">(${esc(formatCompactTokens(latestCompaction.beforeTokens))} → ${esc(formatCompactTokens(latestCompaction.afterTokens))})</span>
-        </div>`
+        })}><span class="ctx-compaction-label">${tBiHtml('Compaction checkpoint saved', '压缩检查点节省')}</span><strong>−${esc(formatCompactTokens(latestCompaction.savedTokens))} tokens</strong><span class="ctx-compaction-range">(${esc(formatCompactTokens(latestCompaction.beforeTokens))} → ${esc(formatCompactTokens(latestCompaction.afterTokens))})</span></div>`
         : '';
 
     const isAwaiting = cb.measurementState === 'awaiting_generation' || cb.segments.length === 0;
@@ -1332,20 +1584,12 @@ export function buildContextBreakdownCard(
     const copyCtxTipAttrs = richTipAttrs({
         key: 'overview:action:copy-context',
         title: tBi('Copy /context Report', '复制 /context 报告'),
-        body: tBi(
-            'Copies a concise plain-text breakdown of context usage, category percentages, largest items, and quota status.',
-            '复制纯文本格式的上下文用量、分类占比、最大占用项与配额状态摘要，便于记录或排查。',
-        ),
-        meta: tBi('Output language follows your current panel language.', '导出语言自动跟随面板当前语言设置。'),
+        body: tBi('Copy plain-text context breakdown and quota summary.', '复制纯文本上下文占比与配额摘要。'),
     });
     const copyHandoffTipAttrs = richTipAttrs({
         key: 'overview:action:copy-handoff',
         title: tBi('Copy Handoff Prompt', '复制交接提示词'),
-        body: tBi(
-            'Generates a ready-to-paste HANDOFF.md continuation prompt so you can start a fresh conversation without losing progress.',
-            '生成可直接粘贴到新会话的 HANDOFF.md 交接提示词，在上下文快满时无损衔接任务。',
-        ),
-        meta: tBi('Includes workspace, branch, active focus, and resume checklist.', '包含工作区、分支、当前焦点与续接检查清单。'),
+        body: tBi('Generate a ready-to-paste HANDOFF.md continuation prompt.', '生成可直接粘贴到新会话的 HANDOFF.md 交接提示词。'),
     });
     const quickActionsHtml = `<div class="ctx-quick-actions">
         <button type="button" class="ctx-action-btn" id="copyContextReportBtn" data-action="copyContextReport"${copyCtxTipAttrs}>${ICON.copy} <span>${tBiHtml('Copy /context Report', '复制 /context 报告')}</span></button>
@@ -1353,23 +1597,21 @@ export function buildContextBreakdownCard(
         <span id="ctxCopyFeedback" class="threshold-feedback" role="status"></span>
     </div>`;
 
-    return `<section class="ctx-breakdown-card" data-ctx-breakdown="true" data-viz-mode="bar" aria-labelledby="ctx-breakdown-heading">
-        <header class="ctx-breakdown-head">
-            <div class="ctx-breakdown-title-wrap">
-                <h4 id="ctx-breakdown-heading">${tBiHtml('Context Composition', '上下文构成')}</h4>
-                <span class="ctx-measure-badge ${badge.cls}" data-measurement-state="${cb.measurementState}"${measureBadgeTipAttrs}>${badge.html}</span>
-            </div>
+    return `<details id="overview-context-composition" class="ctx-breakdown-card overview-details" data-ctx-breakdown="true" data-viz-mode="bar" aria-labelledby="ctx-breakdown-heading">
+        <summary><span id="ctx-breakdown-heading">${tBiHtml('Context Composition', '上下文构成')}</span></summary>
+        <div class="ctx-breakdown-head">
+            <span class="ctx-measure-badge ${badge.cls}" data-measurement-state="${cb.measurementState}"${measureBadgeTipAttrs}>${badge.html}</span>
             ${isAwaiting ? '' : `<div class="ctx-viz-toggle" role="group" aria-label="${esc(tBi('Visualization mode', '视图模式'))}">
                 <button type="button" class="ctx-viz-btn is-active" data-ctx-viz="bar" aria-pressed="true">${tBiHtml('Bar View', '条形视图')}</button>
                 <button type="button" class="ctx-viz-btn" data-ctx-viz="dots" aria-pressed="false">${tBiHtml('Dot Matrix', '点阵视图')}</button>
             </div>`}
-        </header>
+        </div>
         ${dualCapHtml}
         ${compactionChipHtml}
         ${vizHtml}
         ${largestItemsHtml}
         ${quickActionsHtml}
-    </section>`;
+    </details>`;
 }
 
 function buildDualWatermarkMeterHtml(
@@ -1389,31 +1631,11 @@ function buildDualWatermarkMeterHtml(
         const leftPct = Math.max(2, Math.min(98, watermarks.longContextMarkerPctOfCompaction));
         const exceeded = watermarks.exceedsLongContextTier;
         const tierBody = exceeded
-            ? tBi(
-                `Context (${formatCompactTokens(watermarks.contextUsed)}) has crossed the 200k standard API long-context tier (standard API list prices double above 200k, with higher latency and attention degradation). For Antigravity subscription users, this does NOT charge extra money or hard-truncate your conversation — it is an API reference cost & speed/quality heads-up.`,
-                `当前上下文（${formatCompactTokens(watermarks.contextUsed)}）已超过 200k 标准 API 长上下文阶梯线（标准公开 API 超过 200k 输入后单价通常翻倍，且延迟升高、注意力衰减更明显）。对 Antigravity 订阅用户而言不会额外扣费，也不会强制截断会话，仅作 API 参考费用与速度/质量提醒。`,
-            )
-            : tBi(
-                `${formatCompactTokens(watermarks.tokensUntilLongContextTier ?? 0)} tokens left before the 200k standard API long-context tier (above 200k standard API list prices double and latency/attention degradation increase). For Antigravity subscription users, crossing 200k does NOT charge extra money or hard-truncate your conversation — it is an API reference cost & speed/quality heads-up.`,
-                `距离 200k 标准 API 长上下文阶梯线还有 ${formatCompactTokens(watermarks.tokensUntilLongContextTier ?? 0)} tokens（标准公开 API 超过 200k 输入后单价通常翻倍，且延迟升高、注意力更易衰减）。对 Antigravity 订阅用户而言不会额外扣费，也不会强制截断会话，仅作 API 参考费用与速度/质量提醒。`,
-            );
-        const tierMeta = tBi(
-            'Reference heads-up only (no extra subscription charge and no hard cutoff); shown on models supporting >200k context.',
-            '仅作参考提醒（不额外向订阅用户收费，也不会强行截断会话）；仅在支持 >200k 上下文的模型上标注。',
-        );
-        const tickAttrs = richTipAttrs({
-            key: 'overview:watermark:200k-tick',
-            title: tBi('200k Long-Context Tier', '200k 长上下文阶梯'),
-            body: tierBody,
-            meta: tierMeta,
-        });
-        const pillAttrs = richTipAttrs({
-            key: 'overview:watermark:200k-pill',
-            title: tBi('200k Long-Context Tier', '200k 长上下文阶梯'),
-            body: tierBody,
-            meta: tierMeta,
-            focusable: true,
-        });
+            ? tBi(`Context (${formatCompactTokens(watermarks.contextUsed)}) crossed 200k. ${TIER_200K_NOTICE_EN}`, `当前上下文（${formatCompactTokens(watermarks.contextUsed)}）已超过 200k。${TIER_200K_NOTICE_ZH}`)
+            : tBi(`${formatCompactTokens(watermarks.tokensUntilLongContextTier ?? 0)} left before 200k. ${TIER_200K_NOTICE_EN}`, `距 200k 阶梯还剩 ${formatCompactTokens(watermarks.tokensUntilLongContextTier ?? 0)}。${TIER_200K_NOTICE_ZH}`);
+        const tierTitle = tBi('200k Long-Context Tier', '200k 长上下文阶梯');
+        const tickAttrs = richTipAttrs({ key: 'overview:watermark:200k-tick', title: tierTitle, body: tierBody });
+        const pillAttrs = richTipAttrs({ key: 'overview:watermark:200k-pill', title: tierTitle, body: tierBody, focusable: true });
         markers.push(`<span class="overview-watermark-tick is-tier-200k${exceeded ? ' is-exceeded' : ''}" data-watermark="long-context-200k" style="left:${leftPct.toFixed(1)}%"${tickAttrs} aria-hidden="true"></span>`);
         pills.push(`<span class="overview-watermark-pill${exceeded ? ' is-tier-exceeded' : ''}" data-watermark-pill="long-context-200k"${pillAttrs}>${
             exceeded
@@ -1424,26 +1646,12 @@ function buildDualWatermarkMeterHtml(
 
     if (watermarks.hasDistinctPhysicalWindow) {
         const compBody = tBi(
-            `Auto-compaction ceiling is ${formatCompactTokens(watermarks.compactionLimit)} (${watermarks.compactionMarkerPct.toFixed(0)}% of the ${formatCompactTokens(watermarks.physicalContextWindow)} native model window).`,
-            `自动压缩上限为 ${formatCompactTokens(watermarks.compactionLimit)}（占底层模型 ${formatCompactTokens(watermarks.physicalContextWindow)} 原生窗口上限的 ${watermarks.compactionMarkerPct.toFixed(0)}%）。`,
+            `Compaction ${formatCompactTokens(watermarks.compactionLimit)} (${watermarks.compactionMarkerPct.toFixed(0)}% of ${formatCompactTokens(watermarks.physicalContextWindow)} native window).`,
+            `自动压缩上限 ${formatCompactTokens(watermarks.compactionLimit)}（占 ${formatCompactTokens(watermarks.physicalContextWindow)} 原生窗口上限的 ${watermarks.compactionMarkerPct.toFixed(0)}%）。`,
         );
-        const compMeta = tBi(
-            'Antigravity compacts conversation history at this ceiling before the physical window fills up.',
-            '达到自动压缩上限时平台会提前总结旧消息，因此该线早于物理窗口触发。',
-        );
-        const compTickAttrs = richTipAttrs({
-            key: 'overview:watermark:compaction-tick',
-            title: tBi('Auto-Compaction Ceiling', '自动压缩上限'),
-            body: compBody,
-            meta: compMeta,
-        });
-        const compPillAttrs = richTipAttrs({
-            key: 'overview:watermark:compaction-pill',
-            title: tBi('Auto-Compaction Limit / Native Ceiling', '自动压缩上限 / 原生上限'),
-            body: compBody,
-            meta: compMeta,
-            focusable: true,
-        });
+        const compTitle = tBi('Auto-Compaction Ceiling', '自动压缩上限');
+        const compTickAttrs = richTipAttrs({ key: 'overview:watermark:compaction-tick', title: compTitle, body: compBody });
+        const compPillAttrs = richTipAttrs({ key: 'overview:watermark:compaction-pill', title: compTitle, body: compBody, focusable: true });
         markers.push(`<span class="overview-watermark-tick is-compaction-cap" data-watermark="compaction-limit" style="left:100%"${compTickAttrs} aria-hidden="true"></span>`);
         pills.push(`<span class="overview-watermark-pill" data-watermark-pill="compaction-limit"${compPillAttrs}>${tBiHtml('Compaction', '自动压缩上限')} ${esc(formatCompactTokens(watermarks.compactionLimit))} / ${tBiHtml('Native', '原生上限')} ${esc(formatCompactTokens(watermarks.physicalContextWindow))}</span>`);
     }
@@ -1452,55 +1660,27 @@ function buildDualWatermarkMeterHtml(
         return baseMeter;
     }
 
-    return `<div class="overview-meter-wrap" data-dual-watermark="true">
-        ${baseMeter}
-        ${markers.length > 0 ? `<div class="overview-meter-markers">${markers.join('')}</div>` : ''}
-    </div>
-    ${pills.length > 0 ? `<div class="overview-watermark-meta">${pills.join('')}</div>` : ''}`;
+    return `<div class="overview-meter-wrap" data-dual-watermark="true">${baseMeter}${markers.length > 0 ? `<div class="overview-meter-markers">${markers.join('')}</div>` : ''}</div>${pills.length > 0 ? `<div class="overview-watermark-meta">${pills.join('')}</div>` : ''}`;
 }
 
 function buildTurnCacheSummaryHtml(turnCacheInfo: UserTurnCacheSummary | null | undefined): string {
     const latest = turnCacheInfo?.latestTurn;
     if (!latest || latest.cacheStart === 'unknown') { return ''; }
 
-    let pillCls = 'is-cold';
-    let pillHtml = tBiHtml('Cold Start', '冷启动');
-    let pillBody = tBi(
-        'Reflects real server-side Prompt Cache reuse from local telemetry: this turn reused <10% of cached history (common on the first turn, >5m idle expiry, or a model switch, so the prefix must be re-read).',
-        '反映本地遥测上报的真实服务端提示词缓存复用：本轮命中率不足 10%（常见于首轮新会话、闲置超 5 分钟缓存过期或切换模型，需重新读取前缀）。',
-    );
-    if (latest.cacheStart === 'warm') {
-        pillCls = 'is-warm';
-        pillHtml = tBiHtml('Warm Start', '热缓存启动');
-        pillBody = tBi(
-            'Reflects real server-side Prompt Cache reuse from local telemetry: this turn reused ≥70% of cached history for faster first-token latency and lower API reference cost.',
-            '反映本地遥测上报的真实服务端提示词缓存复用：本轮复用了 ≥70% 的已缓存历史，首字响应更快、API 参考费用更低。',
-        );
-    } else if (latest.cacheStart === 'partial') {
-        pillCls = 'is-partial';
-        pillHtml = tBiHtml('Partial Start', '部分命中');
-        pillBody = tBi(
-            'Reflects real server-side Prompt Cache reuse from local telemetry: this turn reused 10%–70% of cached history (partial reuse after edits, file updates, or compaction).',
-            '反映本地遥测上报的真实服务端提示词缓存复用：本轮命中率介于 10%–70%（常见于编辑改动或上下文压缩后的部分复用）。',
-        );
-    }
+    const startMeta = latest.cacheStart === 'warm'
+        ? { cls: 'is-warm', html: tBiHtml('Warm Start', '热缓存启动'), en: 'reused ≥70% cached history.', zh: '复用了 ≥70% 已缓存历史。' }
+        : latest.cacheStart === 'partial'
+            ? { cls: 'is-partial', html: tBiHtml('Partial Start', '部分命中'), en: 'reused 10%–70% cached history.', zh: '命中 10%–70% 缓存历史。' }
+            : { cls: 'is-cold', html: tBiHtml('Cold Start', '冷启动'), en: '<10% hit (first turn / >5m idle / model switch).', zh: '命中 <10%（首轮 / 闲置超 5 分钟 / 切换模型）。' };
+    const pillBody = tBi(`${CACHE_REUSE_PREFIX_EN}${startMeta.en}`, `${CACHE_REUSE_PREFIX_ZH}${startMeta.zh}`);
     const pillTipAttrs = richTipAttrs({
         key: 'overview:turn-cache-start',
         title: tBi('Latest Turn Cache Start', '本轮缓存启动状态'),
-        body: latest.cacheHitPct !== null
-            ? `${pillBody}\n${tBi('Latest turn cache hit', '本轮缓存命中率')}: ${latest.cacheHitPct.toFixed(1)}%`
-            : pillBody,
-        meta: tBi(
-            'Thresholds: Warm ≥70% (cached history reused) · Partial 10%–70% (after edits/compaction) · Cold <10% (first turn / >5m idle expiry / model switch).',
-            '判定阈值：热缓存启动 ≥70%（复用历史）· 部分命中 10%–70%（改动/压缩后部分复用）· 冷启动 <10%（首轮 / 闲置超 5 分钟过期 / 切换模型需重读）。',
-        ),
+        body: latest.cacheHitPct !== null ? `${pillBody}\n${tBi('Cache hit', '缓存命中')}: ${latest.cacheHitPct.toFixed(1)}%` : pillBody,
+        meta: tBi('Warm ≥70% · Partial 10%–70% · Cold <10%', '热缓存 ≥70% · 部分命中 10%–70% · 冷启动 <10%'),
         focusable: true,
     });
-
-    const hitPctHtml = latest.cacheHitPct !== null
-        ? ` <span>(${esc(latest.cacheHitPct.toFixed(0))}%)</span>`
-        : '';
-
+    const hitPctHtml = latest.cacheHitPct !== null ? ` <span>(${esc(latest.cacheHitPct.toFixed(0))}%)</span>` : '';
     let deltaHtml = '';
     if (latest.netContextDeltaTokens !== null) {
         const sign = latest.netContextDeltaTokens >= 0 ? '+' : '−';
@@ -1508,72 +1688,60 @@ function buildTurnCacheSummaryHtml(turnCacheInfo: UserTurnCacheSummary | null | 
         const deltaTipAttrs = richTipAttrs({
             key: 'overview:turn-net-delta',
             title: tBi('Turn Net Context Growth (Δ)', '本轮上下文净变化 (Δ)'),
-            body: latest.isCompactionDrop
-                ? tBi(
-                    `Context shrank by ${formatCompactTokens(Math.abs(latest.netContextDeltaTokens))} tokens compared with the previous turn due to auto-compaction.`,
-                    `相比上一轮净减少 ${formatCompactTokens(Math.abs(latest.netContextDeltaTokens))} tokens（已触发自动压缩释放空间）。`,
-                )
-                : tBi(
-                    `Net change in total prompt context (${formatted} tokens) added during the latest user turn.`,
-                    `最近一轮对话使总上下文净变化了 ${formatted} tokens。`,
-                ),
-            meta: tBi('Compares latest turn peak prompt size against the previous turn.', '对比本轮与上一轮的提示词总 Token 数差值。'),
+            body: tBi(`Net context change: ${formatted} tokens.`, `本轮上下文净变化：${formatted} tokens。`),
             focusable: true,
         });
         deltaHtml = `<span class="overview-turn-delta${latest.isCompactionDrop ? ' is-compaction' : ''}" data-turn-net-delta="${latest.netContextDeltaTokens}"${deltaTipAttrs}>${tBiHtml('Δ Context', '上下文净增长')} ${esc(formatted)}</span>`;
     }
-
     const switchHtml = latest.hadColdCacheSwitch
         ? `<span class="orch-cold-switch-pill"${richTipAttrs({
             key: 'overview:turn-cold-switch',
             title: tBi('Switch Cold Start', '切换冷启动'),
-            body: tBi(
-                'Switching models (or Orchestrator/Executor roles) mid-turn invalidated the previous prompt cache prefix, triggering a cold re-prefill.',
-                '本轮中途切换了模型或编排/执行角色，导致原提示词缓存前缀失效并触发冷启动重算。',
-            ),
-            meta: tBi('Detected when a call changes model and its cache hit drops below 10%.', '触发口径：同会话发生模型切换且该次调用缓存命中率低于 10%。'),
+            body: tBi('Mid-turn model switch invalidated prompt cache (<10% hit).', '本轮切换模型导致缓存失效（命中率 <10%）。'),
             focusable: true,
         })}>${tBiHtml('Switch Cold', '切换冷启动')}</span>`
         : '';
-
-    return `<div class="overview-turn-cache-row" data-turn-cache-state="${latest.cacheStart}" data-turn-index="${latest.turnIndex}">
-        <span class="turn-start-pill ${pillCls}" data-turn-start="${latest.cacheStart}"${pillTipAttrs}>${pillHtml}${hitPctHtml}</span>
-        ${deltaHtml}
-        ${switchHtml}
-    </div>`;
+    return `<div class="overview-turn-cache-row" data-turn-cache-state="${latest.cacheStart}" data-turn-index="${latest.turnIndex}"><span class="turn-start-pill ${startMeta.cls}" data-turn-start="${latest.cacheStart}"${pillTipAttrs}>${startMeta.html}${hitPctHtml}</span>${deltaHtml}${switchHtml}</div>`;
 }
 
 function resolveActiveConversationCalls(
     telemetry: OverviewExtras | undefined,
     activeCascadeId: string | undefined,
 ): GMCallEntry[] {
-    if (!telemetry) { return []; }
-    if (activeCascadeId && telemetry.gmConversations && telemetry.gmConversations[activeCascadeId]?.calls?.length) {
+    if (!telemetry || !activeCascadeId) { return []; }
+    if (telemetry.gmConversations && telemetry.gmConversations[activeCascadeId]?.calls?.length) {
         return telemetry.gmConversations[activeCascadeId].calls;
     }
     const convs = telemetry.gmSummary?.conversations;
     if (!Array.isArray(convs) || convs.length === 0) { return []; }
-    if (activeCascadeId) {
-        const match = convs.find(c => c.cascadeId === activeCascadeId);
-        if (match?.calls?.length) { return match.calls; }
-    }
-    if (convs.length === 1 && convs[0].calls?.length) {
-        return convs[0].calls;
-    }
+    const match = convs.find(c => c.cascadeId === activeCascadeId);
+    if (match?.calls?.length) { return match.calls; }
+    // Never fall back to another conversation's calls when the active conversation has none.
     return [];
 }
 
 function sessionDetails(
     usage: ContextUsage,
-    telemetryHtml = '',
-    breakdownHtml = '',
     v1176?: {
         watermarks?: ContextDualWatermark | null;
         turnCacheHtml?: string;
         orchestratorSplitHtml?: string;
+        observationProjection?: SurfaceObservationProjection | null;
+        contextPctBasis?: ContextDisplayBasis;
+        cacheTtlHtml?: string;
+        handoffV2Html?: string;
+        subjectBadgeHtml?: string;
     },
 ): string {
-    const reading = getContextReading(usage);
+    const obsProj = v1176?.observationProjection ?? null;
+    const legacyReading = getContextReading(usage);
+    const reading = obsProj
+        ? {
+            used: obsProj.usedTokens,
+            limit: obsProj.denominatorTokens,
+            percent: obsProj.primaryPct,
+        }
+        : legacyReading;
     const remaining = getContextRemaining(reading.used, reading.limit);
     const tokenUnit = 'tokens';
     const compression = calculateCompressionStats(usage);
@@ -1588,7 +1756,7 @@ function sessionDetails(
             body: activeRoute.isCrossPool
                 ? tBi(
                     `${activeRoute.plannerLabel} plans the task and delegates execution to ${activeRoute.executorLabel}. Cross-pool means the two roles draw from different shared quota pools.`,
-                    `由 ${activeRoute.plannerLabel} 负责规划任务，并交由 ${activeRoute.executorLabel} 执行；「跨配额池」表示两个角色消耗不同共享配额池的额度。`,
+                    `由 ${activeRoute.plannerLabel} 负责规划任务，并交由 ${activeRoute.executorLabel} 执行；「跨配额池」表示两个角色消耗不同共享配额池的配额。`,
                 )
                 : tBi(
                     `${activeRoute.plannerLabel} plans the task and delegates execution to ${activeRoute.executorLabel}.`,
@@ -1603,7 +1771,9 @@ function sessionDetails(
         </div>`
         : '';
     const contextLabel = tBi('Context used', '上下文占用');
-    const ratio = reading.percent === null ? '—' : `${number(reading.percent, 1)}%`;
+    const ratio = obsProj
+        ? obsProj.primaryPctText
+        : (reading.percent === null ? '—' : `${number(reading.percent, 1)}%`);
     const precisionTipAttrs = richTipAttrs({
         key: 'overview:precision-badge',
         title: usage.isEstimated ? tBi('Estimated Context Reading', '估算上下文读数') : tBi('Measured Context Reading', '实测上下文读数'),
@@ -1619,28 +1789,35 @@ function sessionDetails(
         focusable: true,
     });
     const precisionHtml = `<span class="overview-precision-pill"${precisionTipAttrs}>${usage.isEstimated ? tBiHtml('Estimated', '估算') : tBiHtml('Measured', '实测')}</span>`;
+    const compactionNoticeHtml = obsProj?.compactionWarningActive
+        ? [tBiHtml(
+            `Approaching/exceeding auto-compaction ceiling${obsProj.compactionPct !== null ? ` (${obsProj.compactionPct.toFixed(1).replace(/\.0$/, '')}% of compaction limit)` : ''}`,
+            `接近或超过自动压缩上限${obsProj.compactionPct !== null ? `（已达自动压缩上限的 ${obsProj.compactionPct.toFixed(1).replace(/\.0$/, '')}%）` : ''}`,
+        )]
+        : [];
     const warnings = [
         ...(usage.hasGaps ? [tBiHtml('Data may be incomplete (some step batches failed to load)', '数据可能不完整（部分步骤批次加载失败）')] : []),
-        ...(reading.percent !== null && reading.percent > 100
-            ? [tBiHtml('Above the context limit', '已超过上下文上限')] : []),
+        ...(obsProj ? (obsProj.isOverflow ? [tBiHtml('Above the context limit', '已超过上下文上限')] : []) : (reading.percent !== null && reading.percent > 100
+            ? [tBiHtml('Above the context limit', '已超过上下文上限')] : [])),
+        ...compactionNoticeHtml,
         ...(usage.imageGenerationIncomplete
             ? [tBiHtml('Image workflow data is incomplete', '图片工作流数据不完整')] : []),
     ];
     const diagnostics = [
         metric(tBiHtml('Model Output', '模型输出'), esc(number(usage.totalOutputTokens)), {
             key: 'overview:diag:output',
-            title: tBi('Cumulative Model Output', '累计模型输出'),
-            body: tBi('Total tokens generated by the model across this conversation.', '本会话中模型累计生成的输出 Token 总量。'),
+            title: tBi('Model Output', '模型输出'),
+            body: tBi('Cumulative generated tokens.', '本会话累计输出 Token。'),
         }),
         metric(tBiHtml('Tool Results', '工具结果'), esc(number(usage.totalToolCallOutputTokens)), {
             key: 'overview:diag:tools',
-            title: tBi('Cumulative Tool Results', '累计工具结果'),
-            body: tBi('Total tokens returned by file reads, command executions, searches, and MCP tools.', '文件读取、命令执行、搜索及 MCP 工具累计返回的 Token 总量。'),
+            title: tBi('Tool Results', '工具结果'),
+            body: tBi('Cumulative tool return tokens.', '工具累计返回 Token。'),
         }),
         metric(tBiHtml('Steps', '步骤数'), esc(number(usage.stepCount)), {
             key: 'overview:diag:steps',
-            title: tBi('Trajectory Steps', '会话步骤数'),
-            body: tBi('Number of recorded conversation steps (messages, model replies, tool calls, and checkpoints).', '本会话记录的总步骤数（包含提问、回复、工具调用与检查点）。'),
+            title: tBi('Steps', '步骤数'),
+            body: tBi('Recorded conversation steps.', '会话记录总步骤数。'),
         }),
     ];
     if (usage.compressionDetected) {
@@ -1649,19 +1826,19 @@ function sessionDetails(
             : tBiHtml('Context Drop', '上下文压缩量');
         diagnostics.push(metric(label, esc(compression ? `${number(compression.dropTokens)} ${tokenUnit} · ${number(compression.dropPercent, 1)}%` : '—'), {
             key: 'overview:diag:drop',
-            title: tBi('Compaction Drop', '上下文压缩释放量'),
-            body: tBi('Tokens reclaimed when Antigravity automatically summarized earlier conversation history.', 'Antigravity 自动压缩早期对话历史后释放的 Token 数量与比例。'),
+            title: tBi('Compaction Drop', '压缩释放量'),
+            body: tBi('Tokens reclaimed by auto-compaction.', '自动压缩释放的 Token 量。'),
         }));
         if (usableCount(usage.previousContextUsed)) {
             diagnostics.push(metric(tBiHtml('Before', '压缩前'), esc(number(usage.previousContextUsed)), {
                 key: 'overview:diag:before',
-                title: tBi('Before Compaction', '压缩前上下文'),
-                body: tBi('Measured context size right before auto-compaction ran.', '触发自动压缩前的上下文占用量。'),
+                title: tBi('Before Compaction', '压缩前'),
+                body: tBi('Context size before compaction.', '压缩前上下文占用。'),
             }));
             diagnostics.push(metric(tBiHtml('After', '压缩后'), esc(number(reading.used)), {
                 key: 'overview:diag:after',
-                title: tBi('After Compaction', '压缩后上下文'),
-                body: tBi('Current context size remaining after auto-compaction.', '自动压缩完成后剩余的上下文占用量。'),
+                title: tBi('After Compaction', '压缩后'),
+                body: tBi('Context size after compaction.', '压缩后上下文占用。'),
             }));
         }
     }
@@ -1671,44 +1848,61 @@ function sessionDetails(
             : tBiHtml('since last checkpoint', '自上次检查点');
         diagnostics.push(metric(tBiHtml('Est. delta', '估算增量'), `+${esc(number(usage.estimatedDeltaSinceCheckpoint))} · ${source}`, {
             key: 'overview:diag:delta',
-            title: tBi('Estimated Unmeasured Delta', '估算未实测增量'),
-            body: tBi('Approximate tokens added by new steps after the last measured model usage snapshot.', '上次实测用量之后，新增对话步骤所贡献的估算增量。'),
+            title: tBi('Est. Delta', '估算增量'),
+            body: tBi('Estimated tokens since last measured call.', '上次实测后的新增估算增量。'),
         }));
     }
     if (usage.imageGenStepCount > 0) {
         const models = usage.imageGenerationModels?.map(normalizeModelDisplayName).join(' · ');
         diagnostics.push(metric(tBiHtml('Image Gen', '图片生成'), esc(number(usage.imageGenStepCount)), {
             key: 'overview:diag:img-count',
-            title: tBi('Image Generation Steps', '图片生成次数'),
-            body: tBi('Number of image generation tool steps observed in this conversation.', '本会话中记录的图片生成步骤次数。'),
+            title: tBi('Image Gen', '图片生成'),
+            body: tBi('Image generation steps.', '图片生成步骤数。'),
         }));
         if (models) {
             diagnostics.push(metric(tBiHtml('Image model', '图片模型'), esc(models), {
                 key: 'overview:diag:img-model',
-                title: tBi('Image Generation Model', '图片生成模型'),
-                body: tBi('Image model(s) invoked during image generation steps.', '本次会话图片生成步骤实际调用的模型名称。'),
+                title: tBi('Image Model', '图片模型'),
+                body: tBi('Image generation model used.', '调用的图片生成模型。'),
             }));
         }
     }
     const checkpointId = !isPlanner && isShowModelShortId() && usage.checkpointModel
         ? ` · ${usage.checkpointModel.replace(/^MODEL_PLACEHOLDER_/, '')}` : '';
 
-    return `<div class="overview-session">
+    const obsAttrs = obsProj
+        ? ` data-observation-subject="${esc(obsProj.subjectCascadeId ?? '')}" data-observation-data-rev="${obsProj.dataRevision}" data-observation-pct="${esc(obsProj.primaryPctText)}" data-observation-denom="${obsProj.denominatorTokens ?? ''}" data-observation-basis="${esc(obsProj.actualBasis)}" data-observation-health="${esc(obsProj.healthStatus)}" data-observation-fill="${obsProj.geometryFillPct}" data-compaction-warning="${esc(obsProj.compactionWarningActive ? obsProj.compactionWarningLevel : 'none')}"`
+        : '';
+
+    const meterBlockHtml = obsProj
+        ? (obsProj.isIncomplete
+            ? `<p class="overview-meta" data-observation-incomplete="true">${tBiHtml('Context measurement unavailable', '暂无上下文计量')}</p>`
+            : buildObservationMarkersHtml(contextLabel, obsProj, v1176?.watermarks ?? null))
+        : (reading.percent === null
+            ? `<p class="overview-meta">${tBiHtml('Context measurement unavailable', '暂无上下文计量')}</p>`
+            : buildDualWatermarkMeterHtml(contextLabel, reading.percent, ratio, contextMeterTone(reading.percent), v1176?.watermarks ?? null));
+
+    const activeBasis: ContextDisplayBasis = v1176?.contextPctBasis ?? obsProj?.requestedBasis ?? 'compaction';
+    const basisSwitchHtml = `<div class="ov-basis-row">${ovSegSwitch('contextPctBasis', activeBasis, t('context.basisCompaction'), [
+        { val: 'compaction', labelHtml: tHtml('context.basisCompaction') },
+        { val: 'native', labelHtml: tHtml('context.basisNative') },
+    ])}${v1176?.cacheTtlHtml || ''}</div>`;
+
+    return `<div class="overview-session"${obsAttrs}>
+        ${v1176?.subjectBadgeHtml || ''}
         ${usage.title ? `<p class="overview-session-title">${esc(usage.title)}</p>` : ''}
         <p class="overview-meta">${modelLabel ? `${esc(modelLabel)} · ` : ''}${precisionHtml}</p>
         ${routePillHtml}
+        ${basisSwitchHtml}
         <div class="overview-reading">
             <div><strong>${number(reading.used)}</strong><span> / ${number(reading.limit)} ${tokenUnit}</span></div>
             <span class="overview-percent">${ratio}</span>
         </div>
-        ${reading.percent === null
-            ? `<p class="overview-meta">${tBiHtml('Context measurement unavailable', '暂无上下文计量')}</p>`
-            : buildDualWatermarkMeterHtml(contextLabel, reading.percent, ratio, contextMeterTone(reading.percent), v1176?.watermarks ?? null)}
+        ${meterBlockHtml}
         ${remaining !== null
             ? `<p class="overview-meta">${tBiHtml('Remaining', '可用余量')} · ${number(remaining.tokens)} ${tokenUnit}</p>` : ''}
         ${v1176?.turnCacheHtml || ''}
-        ${breakdownHtml}
-        ${telemetryHtml}
+        ${v1176?.handoffV2Html || ''}
         ${v1176?.orchestratorSplitHtml || ''}
         ${warnings.length ? `<ul class="overview-notices">${warnings.map(warning => `<li>${warning}</li>`).join('')}</ul>` : ''}
         <details id="overview-session-diagnostics" class="overview-details" data-state-key="overview-diagnostics:${esc(usage.cascadeId)}">
@@ -1741,8 +1935,8 @@ function sessionDetails(
     </div>`;
 }
 
-function action(tab: 'models' | 'gmdata' | 'settings', labelHtml: string): string {
-    return `<button type="button" class="overview-action" data-overview-target="${tab}" data-overview-focus="${tab}"><span>${labelHtml}</span> ${arrow}</button>`;
+function action(tab: 'models' | 'gm' | 'gmdata' | 'settings', labelHtml: string, anchor?: string): string {
+    return `<button type="button" class="overview-action" data-overview-target="${tab}" data-overview-focus="${esc(anchor || tab)}"${anchor ? ` data-overview-anchor="${esc(anchor)}"` : ''}><span>${labelHtml}</span> ${arrow}</button>`;
 }
 
 export function buildOverviewTabContent(
@@ -1754,14 +1948,20 @@ export function buildOverviewTabContent(
     now = Date.now(),
     telemetry?: OverviewExtras,
 ): string {
+    const appOnboardingBannerHtml = buildAppOnboardingBannerHtml(telemetry);
     const staleBannerHtml = buildStaleBannerHtml(telemetry?.staleState, 'overview');
+    const d9SelectionBannersHtml = buildD9SelectionBannersHtml(telemetry);
+    const obsProjection = telemetry?.observation ? projectForOverview(telemetry.observation) : null;
     const hasStaleFallbackData = Boolean(telemetry?.staleState?.isStale && (configs.length > 0 || usage || userInfo));
     const connected = (status.state !== 'connecting' && status.state !== 'disconnected') || hasStaleFallbackData;
-    const active = (status.state === 'active' || hasStaleFallbackData) ? usage : null;
+    const matchesObservation = !obsProjection || usage?.cascadeId === obsProjection.subjectCascadeId;
+    const active = matchesObservation && (status.state === 'active' || hasStaleFallbackData) ? usage : null;
     const isCustomModelActive = Boolean(telemetry?.isCustomModelActive);
-    const activeCascadeId = telemetry?.activeCascadeId || active?.cascadeId;
+    const activeCascadeId = obsProjection ? obsProjection.subjectCascadeId ?? undefined : (telemetry?.activeCascadeId ?? active?.cascadeId);
 
-    const activeReading = active ? getContextReading(active) : null;
+    const activeReading = obsProjection
+        ? { used: obsProjection.usedTokens, limit: obsProjection.denominatorTokens, percent: obsProjection.primaryPct }
+        : (active ? getContextReading(active) : null);
     const resolvedWatermarks = active
         ? (telemetry?.watermarks !== undefined
             ? telemetry.watermarks
@@ -1777,7 +1977,16 @@ export function buildOverviewTabContent(
 
     const breakdownHtml = connected ? buildContextBreakdownCard(telemetry?.contextBreakdown, resolvedWatermarks) : '';
 
-    const telemetryData = connected
+    const effectiveSessionCostUsd = obsProjection
+        ? (obsProjection.isZeroStepFresh ? undefined : (obsProjection.sessionCostUsd ?? undefined))
+        : telemetry?.sessionCostUsd;
+
+    const speedMetricMode: SpeedMetricMode = (obsProjection?.speedMode ?? telemetry?.speedMetricMode) === 'e2e' ? 'e2e' : 'decode';
+    const contextPctBasis: ContextDisplayBasis = telemetry?.contextPctBasis ?? obsProjection?.requestedBasis ?? 'compaction';
+    const quotaWindowMode: QuotaWindowMode = telemetry?.quotaWindowMode === '7d' || telemetry?.quotaWindowMode === 'tightest' ? telemetry.quotaWindowMode : '5h';
+    const quotaDirectionMode: QuotaDirectionMode = telemetry?.quotaDirectionMode === 'used' ? 'used' : 'remaining';
+
+    const telemetryData = connected && !obsProjection?.isZeroStepFresh
         ? extractOverviewTelemetry(
             telemetry?.gmSummary,
             activeCascadeId,
@@ -1786,15 +1995,18 @@ export function buildOverviewTabContent(
         )
         : null;
     let telemetryHtml = telemetryData
-        ? telemetryStrip(telemetryData, telemetry?.sessionCostUsd, telemetry?.todayCostUsd, {
+        ? telemetryStrip(telemetryData, effectiveSessionCostUsd, telemetry?.todayCostUsd, {
             speedSample: telemetry?.speedSample,
+            observation: obsProjection,
             displayCurrency: telemetry?.displayCurrency,
             orchestratorPricingMode: telemetry?.orchestratorPricingMode,
+            speedMetricMode,
+            cacheTtl: telemetry?.cacheTtl,
         })
         : '';
     if (!telemetryHtml && connected) {
         const standaloneCost = buildCostTelemetryCell(
-            telemetry?.sessionCostUsd,
+            effectiveSessionCostUsd,
             telemetry?.todayCostUsd,
             telemetry?.displayCurrency,
             telemetry?.orchestratorPricingMode,
@@ -1826,6 +2038,49 @@ export function buildOverviewTabContent(
             : (activeCalls.length > 0 ? analyzeUserTurnCacheStates(activeCalls, splitOptions) : null))
         : null;
     const turnCacheHtml = buildTurnCacheSummaryHtml(resolvedTurnCache);
+    const cacheTtlHtml = !telemetryData ? buildCacheTtlBadgeHtml(telemetry?.cacheTtl) : '';
+
+    const resolvedSwarm = connected
+        ? (telemetry?.swarmOverview ?? deriveSwarmOverviewFromTopology(
+            telemetry?.swarmTopology,
+            activeCascadeId,
+            telemetry?.inspectedMemberId,
+            telemetry?.lockedRootId,
+            telemetry?.swarmGroupCost,
+        ))
+        : null;
+    const swarmLiveStripHtml = buildSwarmLiveStripHtml(resolvedSwarm, {
+        displayCurrency: telemetry?.displayCurrency,
+        inspectedMemberId: telemetry?.inspectedMemberId,
+        lockedRootId: telemetry?.lockedRootId,
+        activeCascadeId,
+        readableMemberIds: telemetry?.readableMemberIds,
+    });
+
+    const showBudgetWarning = Boolean(
+        obsProjection?.compactionWarningActive
+        || (activeReading?.percent !== null && activeReading?.percent !== undefined && activeReading.percent >= 65)
+        || active?.compressionDetected,
+    );
+    const handoffV2Html = connected && (active || telemetry?.handoffPreview)
+        ? buildHandoffV2SectionHtml(
+            telemetry?.handoffPreview,
+            activeCascadeId,
+            obsProjection?.dataRevision ?? 0,
+            showBudgetWarning,
+        )
+        : '';
+    const recoveryBriefHtml = connected ? buildCompactionRecoveryBriefHtml(telemetry?.recoveryBrief) : '';
+    const isInspectingWorker = Boolean(
+        (telemetry?.inspectedMemberId && obsProjection?.subjectKind !== 'main' && !resolvedSwarm?.members.find(m => m.cascadeId === telemetry.inspectedMemberId)?.isCoordinator)
+        || obsProjection?.subjectKind === 'worker'
+        || obsProjection?.subjectKind === 'subagent',
+    );
+    const subjectBadgeHtml = isInspectingWorker
+        ? `<span class="swarm-role-badge is-worker" data-subject-badge="worker">${tHtml('swarm.inspectedWorker')}</span>`
+        : (telemetry?.lockedRootId || resolvedSwarm || obsProjection?.subjectKind === 'main'
+            ? `<span class="swarm-role-badge is-root" data-subject-badge="root">${tHtml('swarm.rootLabel')}</span>`
+            : '');
 
     const groups = connected ? selectMonitorQuotaGroups(configs, active?.model, telemetry?.quotaSummary) : [];
     const resolvedLowQuota = connected
@@ -1838,14 +2093,42 @@ export function buildOverviewTabContent(
     const credits = aiCreditTotal(userInfo?.availableCredits || []);
     const expiryHtml = creditExpiryHtml(getDaysUntilBillingDay(billingDay, new Date(now)));
     const plan = userInfo ? [...new Set([userInfo.planName, userInfo.userTierName].filter(Boolean))].join(' · ') : '';
-    const quotaTitlePlain = tBi('Quota remaining', '剩余配额');
-    const quotaTitleHtml = tBiHtml('Quota remaining', '剩余配额');
+    const quotaTitlePlain = quotaDirectionMode === 'used' ? t('quota.directionUsed') : t('quota.directionRemaining');
+    const quotaTitleHtml = quotaDirectionMode === 'used' ? tHtml('quota.directionUsed') : tHtml('quota.directionRemaining');
+    const quotaControlsHtml = `<div class="ov-quota-controls" data-quota-window-mode="${quotaWindowMode}" data-quota-direction-mode="${quotaDirectionMode}">${ovSegSwitch('quotaWindowMode', quotaWindowMode, tBi('Quota window', '配额窗口'), [
+        { val: '5h', labelHtml: tHtml('quota.window5h') },
+        { val: '7d', labelHtml: tHtml('quota.window7d') },
+        { val: 'tightest', labelHtml: tHtml('quota.windowTightest') },
+    ])}${ovSegSwitch('quotaDirectionMode', quotaDirectionMode, t('quota.directionRemaining'), [
+        { val: 'remaining', labelHtml: tHtml('quota.directionRemaining') },
+        { val: 'used', labelHtml: tHtml('quota.directionUsed') },
+    ])}</div>`;
     const runways = telemetry?.quotaRunways;
 
     const quotaRows = groups.map(group => {
         const poolKey = group.pool || group.key;
-        const band = quotaPercentage(group);
-        const unknownQuota = group.minimum === null;
+        const proj = projectQuotaDisplay({
+            windowMode: quotaWindowMode,
+            directionMode: quotaDirectionMode,
+            window5h: group.fiveHourQuota
+                ? {
+                    remainingFraction: group.fiveHourQuota.remainingFraction,
+                    resetTimeMs: group.fiveHourQuota.resetTime ? Date.parse(group.fiveHourQuota.resetTime) : null,
+                }
+                : (group.minimum !== null ? { remainingFraction: group.minimum, resetTimeMs: group.resetTime ? Date.parse(group.resetTime) : null } : null),
+            window7d: group.weeklyQuota
+                ? {
+                    remainingFraction: group.weeklyQuota.remainingFraction,
+                    resetTimeMs: group.weeklyQuota.resetTime ? Date.parse(group.weeklyQuota.resetTime) : null,
+                }
+                : null,
+            nowMs: now,
+        });
+        const modeTagHtml = `<span class="ov-quota-mode-tag" data-quota-win-tag="${esc(proj.effectiveWindow ?? 'unknown')}" data-quota-dir-tag="${quotaDirectionMode}">${tBiHtml(proj.metricLabelEn, proj.metricLabelZh)}</span>`;
+        const band = proj.displayPct !== null && (quotaDirectionMode === 'used' || quotaWindowMode !== '5h')
+            ? `${proj.displayPct}%`
+            : quotaPercentage(group);
+        const unknownQuota = proj.isUnavailable;
         const partial = (group.missingQuota && group.minimum !== null) || (group.missingReset && group.resetTime);
         const hasDualWindow = Boolean(group.fiveHourQuota || group.weeklyQuota);
         const poolRoleTag = activeRoute?.isCrossPool && group.pool
@@ -1853,14 +2136,14 @@ export function buildOverviewTabContent(
                 ? ` <span class="orch-route-badge"${richTipAttrs({
                     key: `overview:quota-role:${poolKey}`,
                     title: tBi('Planner Role Pool', '规划角色配额池'),
-                    body: tBi('Your active Orchestrator Planner model draws quota from this shared pool.', '当前活跃会话的「规划（编排）」模型正在消耗该配额池的额度。'),
+                    body: tBi('Your active Orchestrator Planner model draws quota from this shared pool.', '当前活跃会话的「规划（编排）」模型正在消耗该配额池的配额。'),
                     focusable: true,
                 })}>${tBiHtml('Planner', '规划')}</span>`
                 : activeRoute.executorPool === group.pool
                     ? ` <span class="orch-route-badge"${richTipAttrs({
                         key: `overview:quota-role:${poolKey}`,
                         title: tBi('Executor Role Pool', '执行角色配额池'),
-                        body: tBi('Your active Orchestrator Executor model draws quota from this shared pool.', '当前活跃会话的「执行」模型正在消耗该配额池的额度。'),
+                        body: tBi('Your active Orchestrator Executor model draws quota from this shared pool.', '当前活跃会话的「执行」模型正在消耗该配额池的配额。'),
                         focusable: true,
                     })}>${tBiHtml('Executor', '执行')}</span>`
                     : '')
@@ -1871,34 +2154,36 @@ export function buildOverviewTabContent(
         const runwayHtml = isCustomModelActive ? '' : formatRunwayBadgeHtml(runwayEstimate, 'overview');
         const dualHtml = hasDualWindow
             ? `<div class="quota-dual-row">
-                ${group.fiveHourQuota ? dualQuotaWindowHtml(group.label, poolKey, '5h', group.fiveHourQuota, now) : ''}
-                ${group.weeklyQuota ? dualQuotaWindowHtml(group.label, poolKey, 'weekly', group.weeklyQuota, now) : ''}
+                ${group.fiveHourQuota ? dualQuotaWindowHtml(group.label, poolKey, '5h', group.fiveHourQuota, now, quotaDirectionMode) : ''}
+                ${group.weeklyQuota ? dualQuotaWindowHtml(group.label, poolKey, 'weekly', group.weeklyQuota, now, quotaDirectionMode) : ''}
             </div>`
             : `${unknownQuota
                 ? '<div class="overview-meter is-unknown" aria-hidden="true"></div>'
-                : meter(`${group.label} · ${quotaTitlePlain}`, group.minimum! * 100, band, quotaMeterTone(group.minimum! * 100))}
+                : meter(`${group.label} · ${quotaTitlePlain}`, (proj.displayPct ?? (group.minimum! * 100)), band, quotaMeterTone((proj.remainingPct ?? (group.minimum! * 100))))}
             <p class="overview-meta">${quotaResetHtml(group, now)}${partial ? ` · ${tBiHtml('Partial data', '数据不完整')}` : ''}</p>`;
         const poolHeadingTip = richTipAttrs({
             key: `overview:quota-pool:${poolKey}`,
             title: group.label,
             body: tBi(
-                `Shared quota pool grouping ${group.members.length === 1 ? '1 model' : `${group.members.length} models`} under one allowance (${unknownQuota ? 'remaining unavailable' : `${band} remaining`}).`,
-                `共享配额池，共包含 ${group.members.length} 个模型，共用同一额度（${unknownQuota ? '暂无剩余数据' : `当前剩余 ${band}`}）。`,
+                `Shared quota pool grouping ${group.members.length === 1 ? '1 model' : `${group.members.length} models`} under one allowance (${unknownQuota ? 'remaining unavailable' : `${band} ${proj.directionLabelEn.toLowerCase()}`}).`,
+                `共享配额池，共包含 ${group.members.length} 个模型，共用同一配额（${unknownQuota ? '暂无剩余数据' : `${proj.directionLabelZh} ${band}`}）。`,
             ),
             meta: tBi(
                 'Models in the same pool share the same rate-limit allowance and reset timer.',
-                '同一配额池内的模型共享相同的可用额度与重置倒计时。',
+                '同一配额池内的模型共享相同的可用配额与重置倒计时。',
             ),
             focusable: true,
         });
         return `<li class="overview-quota-row" data-pool-key="${esc(poolKey)}">
             <div class="overview-quota-heading">
                 <div${poolHeadingTip}><h3>${esc(group.label)}${poolRoleTag}</h3><span class="overview-meta">${modelFamilyCountHtml(group.members.length)}</span></div>
+                <div class="overview-quota-reading">${modeTagHtml}
                 ${hasDualWindow
-                    ? ''
+                    ? (proj.displayPct !== null ? `<strong>${esc(`${proj.displayPct}%`)}</strong>` : '')
                     : (unknownQuota
                         ? `<strong class="overview-quota-unknown">${tBiHtml('Unknown', '未知')}</strong>`
                         : `<strong>${esc(band)}</strong>`)}
+                </div>
             </div>
             ${dualHtml}
             ${runwayHtml}
@@ -1915,69 +2200,83 @@ export function buildOverviewTabContent(
             ? `<ul class="overview-quotas">${quotaRows}</ul>`
             : `<p class="overview-empty">${tBiHtml('Waiting for quota data.', '等待配额数据。')}</p>`);
 
-    const emptyContextHtml = status.state === 'idle'
+    const emptyContextHtml = telemetry?.inspectedMemberId ? tHtml('swarm.readUnavailable') : status.state === 'idle'
         ? tBiHtml('No context measurement for this conversation yet.', '当前会话暂无上下文计量。')
         : tBiHtml('Open an Antigravity conversation to see its context usage.', '打开 Antigravity 会话后即可查看上下文用量。');
 
     const glossaryHtml = connected ? buildOverviewGlossaryHtml() : '';
     const planTipAttrs = richTipAttrs({
         key: 'overview:plan-pill',
-        title: tBi('Active Subscription Plan', '当前订阅方案'),
-        body: tBi(
-            `Account plan reported by Antigravity: ${plan}. Determines your shared quota pool capacity and available models.`,
-            `由 Antigravity 上报的当前账号订阅方案：${plan}，决定共享配额池容量与可用模型范围。`,
-        ),
+        title: tBi('Subscription Plan', '订阅方案'),
+        body: plan,
         focusable: true,
     });
     const aiCreditsTipAttrs = richTipAttrs({
         key: 'overview:ai-credits',
         title: tBi('Account AI Credits', '账号 AI 积分'),
         body: credits === null
-            ? tBi('AI Credit balance was not reported by the backend for this account.', '本地服务暂未上报当前账号的 AI 积分余额。')
-            : tBi(
-                `Available Account AI Credits: ${number(credits)}. Used for overflow usage or premium features when supported by your plan.`,
-                `当前可用账号 AI 积分：${number(credits)}，用于方案支持的超额用量或高级功能抵扣。`,
-            ),
-        meta: tBi(
-            'Expiry countdown is calculated locally from the billing day configured in the Account/Profile tab.',
-            '到期倒计时依据你在「账号」页设置的每月账单日在本地推算。',
-        ),
+            ? tBi('Not reported by local service.', '本地服务暂未上报。')
+            : `${tBi('Available', '可用')}: ${number(credits)}`,
         focusable: true,
     });
+
+    const emptyObservationHtml = !active && obsProjection
+        ? `<div class="overview-session" data-observation-subject="${esc(obsProjection.subjectCascadeId ?? '')}" data-observation-data-rev="${obsProjection.dataRevision}" data-observation-pct="${esc(obsProjection.primaryPctText)}" data-observation-denom="${obsProjection.denominatorTokens ?? ''}" data-observation-basis="${esc(obsProjection.actualBasis)}" data-observation-health="${esc(obsProjection.healthStatus)}" data-observation-fill="${obsProjection.geometryFillPct}" data-compaction-warning="${esc(obsProjection.compactionWarningActive ? obsProjection.compactionWarningLevel : 'none')}">
+            ${subjectBadgeHtml}
+            <div class="overview-reading">
+                <div><strong>${number(obsProjection.usedTokens)}</strong><span> / ${number(obsProjection.denominatorTokens)} tokens</span></div>
+                <span class="overview-percent">${esc(obsProjection.primaryPctText)}</span>
+            </div>
+            ${obsProjection.isIncomplete
+                ? `<p class="overview-meta" data-observation-incomplete="true">${tBiHtml('Context measurement unavailable', '暂无上下文计量')}</p>`
+                : buildObservationMarkersHtml(tBi('Context used', '上下文占用'), obsProjection, resolvedWatermarks)}
+        </div>`
+        : '';
 
     return `<section class="monitor-overview" data-monitor-overview data-monitor-state="${status.state}" aria-labelledby="overview-heading">
         <header class="overview-header">
             <h2 id="overview-heading" data-overview-focus="heading" tabindex="-1">${tBiHtml('Context & quota', '上下文与配额')}</h2>
             ${connected && plan ? `<p class="overview-meta overview-plan-pill"${planTipAttrs}>${esc(plan)}</p>` : ''}
         </header>
+        ${appOnboardingBannerHtml}
         ${staleBannerHtml}
+        ${d9SelectionBannersHtml}
         ${lowQuotaBannerHtml}
+        ${recoveryBriefHtml}
         ${connected ? `<div class="overview-grid">
             <section class="overview-context" aria-labelledby="overview-context-heading">
                 <h3 id="overview-context-heading" class="overview-section-heading"><span class="overview-state-dot" aria-hidden="true"></span><span>${statusHeadingHtml(status.state)}</span></h3>
-                ${active ? sessionDetails(active, telemetryHtml, breakdownHtml, { watermarks: resolvedWatermarks, turnCacheHtml, orchestratorSplitHtml }) : `<p class="overview-empty">${emptyContextHtml}</p>${turnCacheHtml}${breakdownHtml}${telemetryHtml}${orchestratorSplitHtml}`}
-                ${action('gmdata', tBiHtml('View model activity', '查看模型活动'))}
-                ${glossaryHtml}
+                ${active ? sessionDetails(active, { watermarks: resolvedWatermarks, turnCacheHtml, orchestratorSplitHtml, observationProjection: obsProjection, contextPctBasis, cacheTtlHtml, handoffV2Html, subjectBadgeHtml }) : `${emptyObservationHtml || `<p class="overview-empty">${emptyContextHtml}</p>`}${cacheTtlHtml}${turnCacheHtml}${handoffV2Html}${orchestratorSplitHtml}`}
+                ${breakdownHtml}
             </section>
             <section class="overview-quota" aria-labelledby="overview-quota-heading">
-                <h3 id="overview-quota-heading" class="overview-section-heading"><span>${quotaTitleHtml}</span></h3>
+                <div class="overview-quota-top">
+                    <h3 id="overview-quota-heading" class="overview-section-heading"><span>${quotaTitleHtml}</span></h3>
+                    ${quotaControlsHtml}
+                </div>
                 ${quotaBodyHtml}
                 ${action('models', tBiHtml('View models', '查看模型'))}
             </section>
-        </div>` : `<div class="overview-connection">
+        </div>
+        ${telemetryHtml}
+        ${action('gm', tHtml('nav.modelCalls'))}
+        ${swarmLiveStripHtml}
+        ${glossaryHtml}` : `<div class="overview-connection">
             <h3 class="overview-section-heading"><span class="overview-state-dot" aria-hidden="true"></span><span>${statusHeadingHtml(status.state)}</span></h3>
             <p class="overview-empty">${status.state === 'disconnected'
                 ? backendMessageHtml(status.backendIssue)
                 : tBiHtml('Waiting for the local backend.', '正在等待本地后端。')}</p>
         </div>`}
-        <footer class="overview-footer">
+        ${!connected || userInfo || billingDay > 0 ? `<footer class="overview-footer">
             ${connected && (userInfo || billingDay > 0) ? `<p${aiCreditsTipAttrs}>
                 <span>${tBiHtml('AI credits', 'AI 积分')}</span>
                 ${credits === null ? `<span class="overview-meta">${tBiHtml('Not reported', '未上报')}</span>` : `<strong>${number(credits)}</strong>`}
                 <span class="overview-meta">${expiryHtml}</span>
             </p>` : ''}
-            ${action('settings', tBiHtml('Status bar settings', '状态栏设置'))}
-        </footer>
+            ${connected && userInfo
+                ? action('models', tBiHtml('Set credits expiry day', '设置积分到期日'), 'profileBillingDayInput')
+                : (!connected ? action('settings', tHtml('nav.settings')) : '')}
+        </footer>` : ''}
     </section>`;
 }
 
@@ -2031,7 +2330,8 @@ export function getOverviewStyles(): string {
             font-size: .75rem;
             font-weight: 500;
         }
-        .overview-grid { display: grid; grid-template-columns: minmax(0, 1.18fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+        .overview-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: stretch; }
+        .overview-grid:has(.overview-context details[open]) { align-items: start; }
         .overview-context, .overview-quota, .overview-connection {
             padding: 18px 20px;
             min-width: 0;
@@ -2134,6 +2434,8 @@ export function getOverviewStyles(): string {
         .overview-quota-row + .overview-quota-row { border-top: 1px solid var(--overview-rule); }
         .overview-quota-heading { display: flex; justify-content: space-between; align-items: baseline; gap: 6px 12px; }
         .overview-quota-heading > div { min-width: 0; }
+        .overview-quota-reading { display: flex; flex-wrap: wrap; justify-content: end; align-items: baseline; gap: 4px 7px; }
+        body .overview-quota-reading .ov-quota-mode-tag { white-space: normal; }
         .overview-quota-heading strong { flex: 0 0 auto; font-weight: 650; font-size: 1rem; }
         .monitor-overview .overview-model-families { margin-top: 6px; color: var(--overview-muted); font-size: .75rem; }
         .overview-details { margin: 15px 0 9px; border-block: 1px solid var(--overview-rule); padding: 0; }

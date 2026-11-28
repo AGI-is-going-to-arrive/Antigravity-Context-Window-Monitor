@@ -1,6 +1,8 @@
 import { parseCreditBalance } from './account-credits';
 import { LSInfo } from './discovery';
 import { rpcCall, rpcStreamFirstFrame } from './rpc-client';
+import { getTrajectoryPollBudgetSnapshot } from './core/swarm-registry';
+import { normalizeWorkspaceUri, type NormalizeWorkspaceUriOptions } from './conversation-selector';
 import {
     getAntigravityUserConfigPath,
     parseAntigravityUserConfig,
@@ -33,8 +35,48 @@ import {
     PLANNER_RESPONSE_ESTIMATE,
     COMPRESSION_MIN_DROP,
     MAX_CONCURRENT_BATCHES,
+    MAX_RESPONSE_BODY_SIZE,
     STEP_BATCH_SIZE,
 } from './constants';
+
+declare module './models' {
+    interface FullUserStatus {
+        /** True when GetUserStatus RPC succeeded and returned a valid userStatus object. */
+        ok?: boolean;
+        /** Optional error message when ok is false (RPC failure or malformed userStatus). */
+        error?: string;
+    }
+}
+
+/** Return type of `fetchFullUserStatus()` with explicit `ok` status so callers never confuse RPC failures with valid empty data. */
+export interface FullUserStatusFetchResult extends FullUserStatus {
+    ok: boolean;
+    error?: string;
+}
+
+export interface FetchTrajectoryGeneratorMetadataResult {
+    ok: boolean;
+    metadata: RawGeneratorMetadataEntry[];
+    error?: string;
+}
+
+export interface FetchTrajectoryStepsResult {
+    ok: boolean;
+    steps: Array<Record<string, unknown>>;
+    hasGaps: boolean;
+    /** True when suffix recovery retrieved a verified contiguous live tail `[suffixStartOffset..totalSteps)`. */
+    suffixRecovered?: boolean;
+    /** Starting step offset of `steps[0]` when suffix recovery skipped an oversize prefix `[0..suffixStartOffset)`. */
+    suffixStartOffset?: number;
+    error?: string;
+}
+
+export interface FetchTrajectoryStepsOptions {
+    /** Optional per-request response byte cap (clamped to `<= MAX_RESPONSE_BODY_SIZE`). */
+    maxResponseBytes?: number;
+    /** Optional cap on suffix-recovery probe requests (clamped to `[1, 8]`, default `8`). */
+    maxSuffixProbes?: number;
+}
 
 // Re-export from models.ts so extension.ts imports stay compatible
 export {
@@ -60,6 +102,8 @@ export {
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface TrajectorySummary {
+    /** Measured directly by ID because the host's conversation index omitted this swarm member. */
+    manifestMember?: boolean;
     cascadeId: string;
     trajectoryId: string;
     summary: string;
@@ -167,6 +211,12 @@ export interface TokenUsageResult {
     linkedSubagentCascadeIds?: string[];
     /** True when step batch fetching had gaps (some batches failed) */
     hasGaps: boolean;
+    /** True when step fetching recovered a contiguous live tail suffix `[suffixStartOffset..totalSteps)` after an oversize prefix. */
+    suffixRecovered?: boolean;
+    /** Starting step offset of the recovered live tail suffix when `suffixRecovered` is true. */
+    suffixStartOffset?: number;
+    /** In-memory raw steps from the same foreground fetch (non-serialized reuse for breakdown). */
+    _fetchedSteps?: Array<Record<string, unknown>>;
     /** True when consecutive checkpoint inputTokens show a significant drop */
     checkpointCompressionDetected: boolean;
     /** Size of the inputTokens drop between consecutive checkpoints (0 if none) */
@@ -238,6 +288,12 @@ export interface ContextUsage {
     previousContextUsed?: number;
     /** True when step data may be incomplete (batch fetch gaps) */
     hasGaps: boolean;
+    /** True when step fetching recovered a contiguous live tail suffix after an oversize prefix. */
+    suffixRecovered?: boolean;
+    /** Starting step offset of the recovered live tail suffix when `suffixRecovered` is true. */
+    suffixStartOffset?: number;
+    /** Non-enumerable in-memory steps attached by getContextUsage to avoid duplicate foreground reads. */
+    _fetchedSteps?: Array<Record<string, unknown>>;
     /** Shadow model used by the last checkpoint (e.g. M50 Flash Lite) for transparency */
     checkpointModel: string;
     /** Active Planner → Executor pair when dynamic Orchestrator mode is used in this conversation. */
@@ -427,44 +483,25 @@ export async function getAllTrajectories(ls: LSInfo, signal?: AbortSignal): Prom
 
 /**
  * Normalize a URI for comparison:
- * - Strip vscode-remote:// scheme+authority (e.g., vscode-remote://wsl+Ubuntu/path → /path)
- * - Strip file:// prefix
- * - URL-decode (handle %20 etc.)
- * - Remove trailing slash
- * - Lowercase for macOS/Windows case-insensitive FS
+ * - Preserves Remote-SSH and WSL distro authorities so distinct remote hosts or WSL distros
+ *   (e.g. `Ubuntu` vs `Debian`) with identical paths never collide
+ * - Translates `\\wsl$` / `\\wsl.localhost` aliases into canonical `vscode-remote://wsl+<distro>/...`
+ *   while preserving POSIX case sensitivity
+ * - Strips file:// prefix, URL-decodes, strips trailing slash
+ * - Case-folds on Windows and confirmed case-insensitive macOS APFS while preserving case on Linux,
+ *   macOS case-sensitive APFS volumes, and indeterminate macOS APFS probes.
  */
-export function normalizeUri(uri: string, platform: NodeJS.Platform = process.platform): string {
-    let normalized = uri.trim();
-    // Handle vscode-remote:// URIs — extract just the path portion
-    // e.g., vscode-remote://wsl+Ubuntu/home/user/project → /home/user/project
-    // e.g., vscode-remote://ssh-remote+host/home/user/project → /home/user/project
-    const remoteMatch = normalized.match(/^vscode-remote:\/\/[^/]+(\/.*)/i);
-    if (remoteMatch) {
-        normalized = remoteMatch[1];
+export function normalizeUri(
+    uri: string,
+    platformOrOptions: NodeJS.Platform | NormalizeWorkspaceUriOptions = process.platform,
+): string {
+    if (typeof platformOrOptions === 'string') {
+        return normalizeWorkspaceUri(uri, {
+            platform: platformOrOptions,
+            ...(platformOrOptions === 'linux' ? { caseSensitive: true } : {}),
+        });
     }
-    // RFC 8089 file:// URIs (case-insensitive scheme, optional localhost authority)
-    normalized = normalized.replace(/^file:\/\/localhost\//i, '/');
-    normalized = normalized.replace(/^file:\/\/\//i, '/');
-    normalized = normalized.replace(/^file:\/\//i, '');
-    try {
-        normalized = decodeURIComponent(normalized);
-    } catch {
-        // If decoding fails, keep as-is
-    }
-    const isWindowsDrivePath = /^\/?[a-zA-Z]:(?:[\\/]|$)/.test(normalized);
-    // Normalize Windows backslashes so raw paths and file:/// URIs compare equal.
-    if (platform === 'win32' || isWindowsDrivePath) {
-        normalized = normalized.replace(/\\/g, '/');
-    }
-    // Strip leading slash(es) before Windows drive letters (e.g., /C:/ → C:/)
-    if (platform === 'win32' || isWindowsDrivePath) {
-        normalized = normalized.replace(/^\/+([a-zA-Z]:)/, '$1');
-    }
-    normalized = normalized.replace(/\/+$/, '');
-    if (platform === 'darwin' || platform === 'win32') {
-        normalized = normalized.toLowerCase();
-    }
-    return normalized;
+    return normalizeWorkspaceUri(uri, platformOrOptions);
 }
 
 // ─── Step Processing ──────────────────────────────────────────────────────────
@@ -618,9 +655,26 @@ export function processSteps(steps: Array<Record<string, unknown>>): TokenUsageR
     let estimationOverhead = 0;
     let outputTokensSinceCheckpoint = 0;
 
-    let prevCheckpointInputTokens = -1;
+    interface CompressionBaseline {
+        model: string;
+        role: string;
+        branch: string;
+        inputTokens: number;
+        stepIndex: number | null;
+    }
+
+    let prevCheckpoint: CompressionBaseline | null = null;
+    let prevPlanner: CompressionBaseline | null = null;
+    let activeBranch = 'default';
+    let branchEpoch = 0;
     let checkpointCompressionDetected = false;
     let checkpointCompressionDrop = 0;
+
+    const canonicalModelKey = (candidate: unknown): string => {
+        if (!isConcreteModelString(candidate)) { return ''; }
+        const trimmed = candidate.trim();
+        return resolveModelId(trimmed) || trimmed;
+    };
 
     const isDelegatedExecutor = (candidate: string): boolean => {
         if (!orchestratorConfig || !candidate) { return false; }
@@ -628,6 +682,76 @@ export function processSteps(steps: Array<Record<string, unknown>>): TokenUsageR
         const normExec = resolveModelId(orchestratorConfig.executionModel) || orchestratorConfig.executionModel;
         return normCandidate === normExec;
     };
+
+    const extractExplicitBranch = (
+        step: Record<string, unknown>,
+        meta?: Record<string, unknown>,
+    ): string | null => {
+        const pr = step.plannerResponse && typeof step.plannerResponse === 'object' && !Array.isArray(step.plannerResponse)
+            ? step.plannerResponse as Record<string, unknown>
+            : undefined;
+        const explicitStr = [
+            meta?.branchId,
+            meta?.trajectoryBranchId,
+            meta?.conversationBranchId,
+            meta?.executionBranchId,
+            meta?.branchName,
+            meta?.branch,
+            meta?.forkId,
+            step.branchId,
+            step.trajectoryBranchId,
+            step.branchName,
+            step.branch,
+            step.forkId,
+            pr?.branchId,
+            pr?.branch,
+        ].find(v => typeof v === 'string' && v.trim().length > 0);
+        if (typeof explicitStr === 'string') {
+            return explicitStr.trim();
+        }
+        const explicitNum = [meta?.branchIndex, step.branchIndex].find(
+            v => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0,
+        );
+        if (typeof explicitNum === 'number') {
+            return `branch:${explicitNum}`;
+        }
+        return null;
+    };
+
+    const extractStepRole = (
+        step: Record<string, unknown>,
+        meta: Record<string, unknown>,
+        usageModel: string,
+    ): string => {
+        const pr = step.plannerResponse && typeof step.plannerResponse === 'object' && !Array.isArray(step.plannerResponse)
+            ? step.plannerResponse as Record<string, unknown>
+            : undefined;
+        const explicitRole = [
+            meta.role,
+            meta.agentRole,
+            meta.plannerRole,
+            meta.stepRole,
+            meta.executionRole,
+            step.role,
+            pr?.role,
+        ].find(v => typeof v === 'string' && v.trim().length > 0);
+        if (typeof explicitRole === 'string') {
+            return explicitRole.trim().toLowerCase();
+        }
+        if (meta.isSubagent === true || step.isSubagent === true) {
+            return 'subagent';
+        }
+        if (usageModel && isDelegatedExecutor(usageModel)) {
+            return 'executor';
+        }
+        return 'planner';
+    };
+
+    const isDelegatedOrChildRole = (role: string): boolean =>
+        role === 'executor'
+        || role === 'delegated_executor'
+        || role === 'subagent'
+        || role === 'worker';
 
     const maybeClearStaleOrchestrator = (nextModel: string): void => {
         if (!orchestratorConfig || !nextModel) { return; }
@@ -642,10 +766,23 @@ export function processSteps(steps: Array<Record<string, unknown>>): TokenUsageR
 
     for (let globalStepIdx = 0; globalStepIdx < steps.length; globalStepIdx++) {
         const step = steps[globalStepIdx];
+        if (!step || typeof step !== 'object' || Array.isArray(step)) { continue; }
         const meta = step.metadata as Record<string, unknown> | undefined;
         const stepType = (step.type as string) || '';
         const stepModel = typeof meta?.generatorModel === 'string' ? meta.generatorModel : '';
         const imageStep = isImageGenStep(step, stepModel);
+        const explicitStepIdx = typeof step.stepIndex === 'number' && Number.isSafeInteger(step.stepIndex) && step.stepIndex >= 0
+            ? step.stepIndex
+            : null;
+        if (stepType === 'CORTEX_STEP_TYPE_BRANCH' || stepType === 'CORTEX_STEP_TYPE_REWIND' || meta?.isBranchStart === true) {
+            branchEpoch++;
+            activeBranch = `epoch:${branchEpoch}`;
+        }
+        const explicitBranch = extractExplicitBranch(step, meta);
+        if (explicitBranch) {
+            activeBranch = explicitBranch;
+        }
+        const stepBranch = explicitBranch || activeBranch;
 
         // Count user input steps
         if (stepType === StepType.USER_INPUT) {
@@ -670,9 +807,7 @@ export function processSteps(steps: Array<Record<string, unknown>>): TokenUsageR
                 model = selected;
                 const normSelected = resolveModelId(selected) || selected;
                 const normExec = executionModel ? (resolveModelId(executionModel) || executionModel) : '';
-                const segStep = typeof step.stepIndex === 'number' && Number.isSafeInteger(step.stepIndex) && step.stepIndex >= 0
-                    ? step.stepIndex
-                    : globalStepIdx;
+                const segStep = explicitStepIdx ?? globalStepIdx;
                 const prevSeg = orchestratorHistory[orchestratorHistory.length - 1];
                 if (!prevSeg
                     || (resolveModelId(prevSeg.planModel) || prevSeg.planModel) !== normSelected
@@ -700,41 +835,42 @@ export function processSteps(steps: Array<Record<string, unknown>>): TokenUsageR
         if (stepType === StepType.CHECKPOINT && meta) {
             const usage = extractModelUsage(meta);
             if (usage) {
-                // Detect compression by comparing consecutive checkpoint inputTokens
+                // Detect compression by comparing consecutive checkpoint inputTokens on the same model & branch
                 const checkpointInput = usage.inputTokens + usage.cacheReadTokens + (usage.cacheCreationTokens || 0);
-                if (prevCheckpointInputTokens > 0 && checkpointInput < prevCheckpointInputTokens) {
-                    const drop = prevCheckpointInputTokens - checkpointInput;
-                    if (drop > COMPRESSION_MIN_DROP) {
-                        checkpointCompressionDetected = true;
-                        checkpointCompressionDrop = drop;
+                const ckptModelKey = canonicalModelKey(usage.model) || canonicalModelKey(stepModel);
+                if (checkpointInput > 0) {
+                    const forwardOrder = explicitStepIdx === null
+                        || prevCheckpoint?.stepIndex === null
+                        || prevCheckpoint === null
+                        || explicitStepIdx > prevCheckpoint.stepIndex;
+                    const sameModel = prevCheckpoint !== null && prevCheckpoint.model === ckptModelKey;
+                    if (
+                        prevCheckpoint
+                        && prevCheckpoint.branch === stepBranch
+                        && sameModel
+                        && forwardOrder
+                        && checkpointInput < prevCheckpoint.inputTokens
+                    ) {
+                        const drop = prevCheckpoint.inputTokens - checkpointInput;
+                        if (drop > COMPRESSION_MIN_DROP) {
+                            checkpointCompressionDetected = true;
+                            checkpointCompressionDrop = drop;
+                        }
                     }
+                    prevCheckpoint = {
+                        model: ckptModelKey,
+                        role: 'checkpoint',
+                        branch: stepBranch,
+                        inputTokens: checkpointInput,
+                        stepIndex: explicitStepIdx,
+                    };
                 }
-                prevCheckpointInputTokens = checkpointInput;
 
                 lastModelUsage = usage;
                 tokenUsageSource = 'checkpoint';
                 checkpointModel = usage.model;
                 estimationOverhead = 0;
                 outputTokensSinceCheckpoint = 0;
-            }
-
-            // Log retryInfos (observation mode — NOT added to totals)
-            const retryInfos = meta.retryInfos as Array<Record<string, unknown>> | undefined;
-            if (retryInfos && retryInfos.length > 0) {
-                let retryInputTokens = 0;
-                let retryOutputTokens = 0;
-                for (const retry of retryInfos) {
-                    const retryUsage = retry.usage as Record<string, unknown> | undefined;
-                    if (retryUsage) {
-                        retryInputTokens += parseInt(String(retryUsage.inputTokens || '0'), 10);
-                        retryOutputTokens += parseInt(String(retryUsage.outputTokens || '0'), 10);
-                    }
-                }
-                console.log(
-                    `[ContextMonitor] Checkpoint retryInfos: ${retryInfos.length} retries, ` +
-                    `retryInputTokens=${retryInputTokens}, retryOutputTokens=${retryOutputTokens}, ` +
-                    `mainInputTokens=${usage?.inputTokens ?? 0}, mainOutputTokens=${usage?.outputTokens ?? 0}`
-                );
             }
         }
 
@@ -744,6 +880,54 @@ export function processSteps(steps: Array<Record<string, unknown>>): TokenUsageR
         if (stepType === StepType.PLANNER_RESPONSE && meta && !imageStep) {
             const usage = extractModelUsage(meta);
             if (usage) {
+                // Detect input-drop compaction on modern PLANNER_RESPONSE snapshots ONLY within
+                // the same canonical model, same role, and same branch (and forward step order),
+                // ignoring delegated Orchestrator sub-executor / subagent steps so model/role/branch
+                // switches NEVER trigger false compaction events.
+                // Resolve the step's measured model strictly from the step itself
+                // (`usage.model` or `meta.generatorModel`), NEVER inheriting a prior
+                // step's conversation-level `model` when this step's model is unknown.
+                const rawMeasuredModel = isConcreteModelString(usage.model)
+                    ? usage.model.trim()
+                    : (isConcreteModelString(stepModel) ? stepModel.trim() : '');
+                const canonicalMeasuredModel = canonicalModelKey(rawMeasuredModel);
+                const stepRole = extractStepRole(step, meta, rawMeasuredModel);
+
+                if (!isDelegatedOrChildRole(stepRole)) {
+                    const plannerInput = usage.inputTokens + usage.cacheReadTokens + (usage.cacheCreationTokens || 0);
+                    if (plannerInput > 0) {
+                        if (canonicalMeasuredModel) {
+                            const forwardOrder = explicitStepIdx === null
+                                || prevPlanner?.stepIndex === null
+                                || prevPlanner === null
+                                || explicitStepIdx > prevPlanner.stepIndex;
+                            if (
+                                prevPlanner
+                                && prevPlanner.model === canonicalMeasuredModel
+                                && prevPlanner.role === stepRole
+                                && prevPlanner.branch === stepBranch
+                                && forwardOrder
+                                && plannerInput < prevPlanner.inputTokens
+                            ) {
+                                const drop = prevPlanner.inputTokens - plannerInput;
+                                if (drop > COMPRESSION_MIN_DROP) {
+                                    checkpointCompressionDetected = true;
+                                    checkpointCompressionDrop = drop;
+                                }
+                            }
+                            prevPlanner = {
+                                model: canonicalMeasuredModel,
+                                role: stepRole,
+                                branch: stepBranch,
+                                inputTokens: plannerInput,
+                                stepIndex: explicitStepIdx,
+                            };
+                        } else {
+                            // Never compare across unknown/unspecified models.
+                            prevPlanner = null;
+                        }
+                    }
+                }
                 lastModelUsage = usage;
                 tokenUsageSource = 'planner';
                 estimationOverhead = 0;
@@ -857,6 +1041,122 @@ export function isRpcUnimplementedError(err: unknown): boolean {
     return /\bHTTP\s+(?:404|501)\b/i.test(message) || /\bunimplemented\b/i.test(message);
 }
 
+const MAX_TRAJECTORY_STEPS = 200_000;
+const MAX_STEP_FETCH_PAGES = 10_000;
+const MAX_GENERATOR_METADATA_ENTRIES = 100_000;
+const MAX_SUFFIX_RECOVERY_PROBES = 8;
+const MIN_POLL_BUDGET_FOR_HEADROOM_CAP_BYTES = 4 * 1024;
+
+function isOversizeRpcError(err: unknown): boolean {
+    const message = err instanceof Error ? err.message : String(err ?? '');
+    return /RPC response exceeded \d+ bytes/i.test(message);
+}
+
+function isTrajectoryByteBudgetError(err: unknown): boolean {
+    const message = err instanceof Error ? err.message : String(err ?? '');
+    return /Trajectory poll byte budget exhausted/i.test(message);
+}
+
+function isTrajectoryPollBudgetError(err: unknown): boolean {
+    const message = err instanceof Error ? err.message : String(err ?? '');
+    return /Trajectory poll (?:byte )?budget exhausted/i.test(message);
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+    return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isBoundedNonNegativeInt(value: unknown, max: number): boolean {
+    if (typeof value === 'number') {
+        return Number.isSafeInteger(value) && value >= 0 && value <= max;
+    }
+    if (typeof value === 'string' && /^\d+$/.test(value)) {
+        const parsed = Number(value);
+        return Number.isSafeInteger(parsed) && parsed >= 0 && parsed <= max;
+    }
+    return false;
+}
+
+function isValidGeneratorMetadataEntry(item: unknown): item is RawGeneratorMetadataEntry {
+    if (!isPlainRecord(item)) { return false; }
+    if (item.stepIndices !== undefined) {
+        if (!Array.isArray(item.stepIndices)) { return false; }
+        for (const idx of item.stepIndices) {
+            if (!isBoundedNonNegativeInt(idx, MAX_TRAJECTORY_STEPS)) { return false; }
+        }
+    }
+    if (item.chatModel !== undefined) {
+        if (!isPlainRecord(item.chatModel)) { return false; }
+        if (item.chatModel.promptSections !== undefined) {
+            if (!Array.isArray(item.chatModel.promptSections)) { return false; }
+            for (const sec of item.chatModel.promptSections) {
+                if (!isPlainRecord(sec)) { return false; }
+            }
+        }
+        if (item.chatModel.usage !== undefined && !isPlainRecord(item.chatModel.usage)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/**
+ * Fetch raw GetCascadeTrajectoryGeneratorMetadata entries with an explicit `ok` flag
+ * so callers can distinguish a genuine empty result from an RPC/payload failure or
+ * filtered malformed entries without latching incomplete data into cache.
+ */
+export async function fetchTrajectoryGeneratorMetadataResult(
+    ls: LSInfo,
+    cascadeId: string,
+    signal?: AbortSignal,
+): Promise<FetchTrajectoryGeneratorMetadataResult> {
+    try {
+        const resp = await rpcCall(ls, 'GetCascadeTrajectoryGeneratorMetadata', {
+            cascadeId,
+            metadata: { ideName: 'antigravity', extensionName: 'antigravity' },
+        }, 15000, signal);
+        if (!isPlainRecord(resp)) {
+            return { ok: false, metadata: [], error: 'Invalid GetCascadeTrajectoryGeneratorMetadata response' };
+        }
+        const raw = resp.generatorMetadata;
+        if (raw === undefined) {
+            // Proto3 omits genuinely empty repeated fields (`{}`), whereas an error envelope
+            // without `generatorMetadata` is inconclusive/failed.
+            if ('error' in resp || 'code' in resp) {
+                return { ok: false, metadata: [], error: 'Error payload in GetCascadeTrajectoryGeneratorMetadata response' };
+            }
+            return { ok: true, metadata: [] };
+        }
+        if (!Array.isArray(raw)) {
+            return { ok: false, metadata: [], error: 'Invalid generatorMetadata payload' };
+        }
+        if (raw.length > MAX_GENERATOR_METADATA_ENTRIES) {
+            return { ok: false, metadata: [], error: `generatorMetadata exceeded maximum safe bound (${MAX_GENERATOR_METADATA_ENTRIES})` };
+        }
+        const metadata: RawGeneratorMetadataEntry[] = [];
+        let invalidCount = 0;
+        for (const item of raw) {
+            if (isValidGeneratorMetadataEntry(item)) {
+                metadata.push(item);
+            } else {
+                invalidCount++;
+            }
+        }
+        if (invalidCount > 0) {
+            return {
+                ok: false,
+                metadata,
+                error: `Filtered ${invalidCount} malformed generatorMetadata ${invalidCount === 1 ? 'entry' : 'entries'}`,
+            };
+        }
+        return { ok: true, metadata };
+    } catch (err) {
+        if (signal?.aborted) { throw err; }
+        const message = err instanceof Error ? err.message : String(err ?? 'Unknown GM metadata error');
+        return { ok: false, metadata: [], error: message };
+    }
+}
+
 /**
  * Fetch raw GetCascadeTrajectoryGeneratorMetadata entries without stripping
  * `chatModel.promptSections` (`{ title, tokenType, contentLen }`) or `chatModel.usage`.
@@ -867,103 +1167,976 @@ export async function fetchTrajectoryGeneratorMetadata(
     cascadeId: string,
     signal?: AbortSignal,
 ): Promise<RawGeneratorMetadataEntry[]> {
-    try {
-        const resp = await rpcCall(ls, 'GetCascadeTrajectoryGeneratorMetadata', {
-            cascadeId,
-            metadata: { ideName: 'antigravity', extensionName: 'antigravity' },
-        }, 15000, signal);
-        const raw = resp.generatorMetadata;
-        if (!Array.isArray(raw)) { return []; }
-        return raw.filter((item): item is RawGeneratorMetadataEntry =>
-            !!item && typeof item === 'object' && !Array.isArray(item));
-    } catch (err) {
-        if (signal?.aborted) { throw err; }
-        return [];
+    const result = await fetchTrajectoryGeneratorMetadataResult(ls, cascadeId, signal);
+    return result.metadata;
+}
+
+interface ValidatedStepsPage {
+    ok: boolean;
+    steps: Array<Record<string, unknown>>;
+    stepIndexMismatch: boolean;
+    error?: string;
+}
+
+/** A manifest identifies a member but cannot establish its step count. Start at the
+ * last indexed generator step and verify the end of the trajectory with bounded
+ * tail reads. Empty, failed, malformed or oversized probes are not new chats. */
+export async function readUnlistedMemberStepCount(
+    ls: LSInfo, cascadeId: string, signal?: AbortSignal,
+    fetchMetadata = fetchTrajectoryGeneratorMetadataResult,
+): Promise<number | null> {
+    const gm = await fetchMetadata(ls, cascadeId, signal);
+    if (!gm.ok) { return null; }
+    let offset = 0;
+    for (const entry of gm.metadata) {
+        for (const index of entry.stepIndices ?? []) { offset = Math.max(offset, Number(index) + 1); }
     }
+    for (let page = 0; page < 3 && offset <= MAX_TRAJECTORY_STEPS; page++) {
+        const response = await rpcCall(ls, 'GetCascadeTrajectorySteps', {
+            cascadeId, stepOffset: offset, startIndex: offset, endIndex: offset + 32,
+        }, 4_000, signal, { maxResponseBytes: 1024 * 1024 });
+        const tail = validateStepsPageResponse(response, offset);
+        if (!tail.ok) { return null; }
+        if (!tail.steps.length) { return offset > 0 ? offset : null; }
+        offset += tail.steps.length;
+    }
+    return null;
+}
+
+/** Preserve transport failures for the GM tracker's retry policy. */
+export function requireGeneratorMetadata(result: FetchTrajectoryGeneratorMetadataResult): RawGeneratorMetadataEntry[] {
+    if (!result.ok) { throw new Error(result.error || 'Generator metadata unavailable'); }
+    return result.metadata;
+}
+
+function validateStepsPageResponse(resp: unknown, expectedStart: number): ValidatedStepsPage {
+    if (!isPlainRecord(resp)) {
+        return {
+            ok: false,
+            steps: [],
+            stepIndexMismatch: false,
+            error: `Invalid steps response object at offset ${expectedStart}`,
+        };
+    }
+    const rawSteps = resp.steps;
+    if (rawSteps === undefined) {
+        if ('error' in resp || 'code' in resp) {
+            return {
+                ok: false,
+                steps: [],
+                stepIndexMismatch: false,
+                error: `Error payload in steps batch at offset ${expectedStart}`,
+            };
+        }
+        // Proto3 omits empty repeated `steps` field; caller treats 0 steps for a needed range as empty/gap.
+        return { ok: true, steps: [], stepIndexMismatch: false };
+    }
+    if (!Array.isArray(rawSteps)) {
+        return {
+            ok: false,
+            steps: [],
+            stepIndexMismatch: false,
+            error: `Invalid steps payload at offset ${expectedStart}`,
+        };
+    }
+    if (rawSteps.length > MAX_TRAJECTORY_STEPS) {
+        return {
+            ok: false,
+            steps: [],
+            stepIndexMismatch: false,
+            error: `Steps page exceeded maximum safe bound (${MAX_TRAJECTORY_STEPS}) at offset ${expectedStart}`,
+        };
+    }
+
+    const validSteps: Array<Record<string, unknown>> = [];
+    let invalidCount = 0;
+    let stepIndexMismatch = false;
+    let stepIndexError: string | undefined;
+
+    for (let i = 0; i < rawSteps.length; i++) {
+        const entry = rawSteps[i];
+        if (!isPlainRecord(entry)) {
+            invalidCount++;
+            continue;
+        }
+        if (entry.stepIndex !== undefined) {
+            const idx = entry.stepIndex;
+            if (typeof idx !== 'number' || !Number.isSafeInteger(idx) || idx < 0 || idx > MAX_TRAJECTORY_STEPS) {
+                invalidCount++;
+                continue;
+            }
+            if (idx !== expectedStart + i) {
+                stepIndexMismatch = true;
+                if (!stepIndexError) {
+                    stepIndexError = `Non-contiguous stepIndex ${idx} at expected offset ${expectedStart + i}`;
+                }
+            }
+        }
+        validSteps.push(entry);
+    }
+
+    if (invalidCount > 0) {
+        return {
+            ok: false,
+            steps: validSteps,
+            stepIndexMismatch,
+            error: `Filtered ${invalidCount} malformed step ${invalidCount === 1 ? 'entry' : 'entries'} at offset ${expectedStart}`,
+        };
+    }
+    if (stepIndexMismatch) {
+        return {
+            ok: false,
+            steps: validSteps,
+            stepIndexMismatch: true,
+            error: stepIndexError,
+        };
+    }
+    return { ok: true, steps: validSteps, stepIndexMismatch: false };
 }
 
 /**
  * Fetch trajectory steps across both legacy `startIndex`/`endIndex` servers
- * and Antigravity v2.34+ `stepOffset` hubs without duplicating overlapping batches.
+ * and Antigravity v2.34+ `stepOffset` hubs without dropping short pages, duplicating
+ * overlapping batches, OOMing on >50MB conversations, or masking malformed/empty pages as complete.
+ * When page 0 hits a response-size or byte-budget cap on a large conversation, runs a bounded
+ * suffix recovery probe (`<= 8` sequential probes) to retrieve the earliest fitting live tail
+ * `[suffixStartOffset .. totalSteps)` while preserving poll headroom for downstream metadata.
+ * Returns `{ ok, steps, hasGaps, suffixStartOffset?, error? }` so callers distinguish genuine empty
+ * from RPC errors, mid-conversation gaps, and live-tail suffix recovery.
  */
 export async function fetchTrajectorySteps(
     ls: LSInfo,
     cascadeId: string,
     totalSteps: number,
     signal?: AbortSignal,
-): Promise<{ steps: Array<Record<string, unknown>>; hasGaps: boolean }> {
-    const maxSteps = Math.max(totalSteps, 0);
+    options?: FetchTrajectoryStepsOptions,
+): Promise<FetchTrajectoryStepsResult> {
+    if (
+        typeof totalSteps !== 'number'
+        || !Number.isSafeInteger(totalSteps)
+        || totalSteps < 0
+        || totalSteps > MAX_TRAJECTORY_STEPS
+    ) {
+        return {
+            ok: false,
+            steps: [],
+            hasGaps: true,
+            error: `Invalid totalSteps count: ${String(totalSteps)}`,
+        };
+    }
+    if (totalSteps === 0) {
+        return { ok: true, steps: [], hasGaps: false };
+    }
+
+    const baseMaxResponseBytes = typeof options?.maxResponseBytes === 'number'
+        && Number.isFinite(options.maxResponseBytes)
+        && options.maxResponseBytes > 0
+        ? Math.min(Math.floor(options.maxResponseBytes), MAX_RESPONSE_BODY_SIZE)
+        : MAX_RESPONSE_BODY_SIZE;
+    const maxSuffixProbes = typeof options?.maxSuffixProbes === 'number'
+        && Number.isFinite(options.maxSuffixProbes)
+        && options.maxSuffixProbes >= 1
+        ? Math.min(Math.floor(options.maxSuffixProbes), MAX_SUFFIX_RECOVERY_PROBES)
+        : MAX_SUFFIX_RECOVERY_PROBES;
+
     const allSteps: Array<Record<string, unknown>> = [];
+    const appendSteps = (dst: Array<Record<string, unknown>>, src: readonly Record<string, unknown>[]): void => {
+        for (let i = 0; i < src.length; i++) { dst.push(src[i]); }
+    };
+    const isSizeErr = (err: unknown): boolean => isOversizeRpcError(err) || isTrajectoryByteBudgetError(err);
+    const maxBoundMsg = (off: number): string => `Accumulated steps exceeded maximum safe bound (${MAX_TRAJECTORY_STEPS}) at offset ${off}`;
     let hasGaps = false;
+    let firstError: string | undefined;
+    let pagesFetched = 0;
 
-    const batchRanges: Array<{ start: number; end: number }> = [];
-    for (let start = 0; start < maxSteps; start += STEP_BATCH_SIZE) {
-        batchRanges.push({ start, end: Math.min(start + STEP_BATCH_SIZE, maxSteps) });
-    }
-    if (batchRanges.length === 0) {
-        return { steps: allSteps, hasGaps: false };
-    }
+    const recordError = (msg: string): void => {
+        hasGaps = true;
+        if (!firstError) { firstError = msg; }
+    };
 
-    const fetchBatch = ({ start, end }: { start: number; end: number }) =>
-        rpcCall(ls, 'GetCascadeTrajectorySteps', {
+    const fetchBatch = (
+        { start, end }: { start: number; end: number },
+        maxResponseBytes?: number,
+    ) => {
+        const cap = maxResponseBytes !== undefined ? maxResponseBytes : baseMaxResponseBytes;
+        return rpcCall(ls, 'GetCascadeTrajectorySteps', {
             cascadeId,
             startIndex: start,
             endIndex: end,
             stepOffset: start,
-        }, 30000, signal);
+        }, 30000, signal, cap < MAX_RESPONSE_BODY_SIZE ? { maxResponseBytes: cap } : undefined);
+    };
 
-    // Probe the first batch when multiple pages are expected: v2.34+ hubs ignore
-    // endIndex and can return all steps from stepOffset=0 in one response.
-    let remainingStart = 0;
-    if (batchRanges.length > 1) {
-        remainingStart = 1;
-        try {
-            const firstResp = await fetchBatch(batchRanges[0]);
-            const firstSteps = firstResp.steps as Array<Record<string, unknown>> | undefined;
-            if (firstSteps && firstSteps.length > 0) {
-                allSteps.push(...firstSteps);
-                if (firstSteps.length >= maxSteps || firstSteps.length > STEP_BATCH_SIZE) {
-                    return { steps: allSteps, hasGaps: false };
+    const logBatchError = (start: number, end: number, err: unknown): string => {
+        if (!isRpcUnimplementedError(err)) {
+            console.warn(`[ContextMonitor] Failed to fetch steps batch [${start}-${end}] for cascade ${cascadeId.substring(0, 8)}: ${err}`);
+        }
+        return err instanceof Error ? err.message : String(err ?? 'Unknown steps batch error');
+    };
+
+    const fetchSequentialRange = async (
+        startOffset: number,
+        targetEnd: number,
+        allowExceedTargetEnd: boolean,
+        maxResponseBytes?: number,
+        existingCount = allSteps.length,
+        minReserveRequests = 0,
+        minReserveBytes = 0,
+    ): Promise<{ ok: boolean; covered: number; steps: Array<Record<string, unknown>>; error?: string; budgetExhausted?: boolean }> => {
+        const collected: Array<Record<string, unknown>> = [];
+        let cursor = startOffset;
+        const fail = (error: string, budgetExhausted?: boolean, covered = cursor) =>
+            ({ ok: false, covered, steps: collected, ...(budgetExhausted ? { budgetExhausted: true } : {}), error });
+
+        while (cursor < targetEnd) {
+            if (signal?.aborted) { throw new Error('RPC aborted'); }
+            let reqMaxBytes = maxResponseBytes;
+            if (minReserveRequests > 0 || minReserveBytes > 0) {
+                const snap = getTrajectoryPollBudgetSnapshot();
+                if (snap) {
+                    if (
+                        (minReserveRequests > 0 && snap.effectiveRequestsLeft <= minReserveRequests)
+                        || snap.remainingMs <= 100
+                    ) {
+                        return fail(`Reserved poll budget for live tail recovery at offset ${cursor}`, true);
+                    }
+                    if (minReserveBytes > 0) {
+                        const availBytes = snap.effectiveBytesLeft - minReserveBytes;
+                        if (availBytes <= 0) {
+                            return fail(`Reserved byte budget for live tail recovery at offset ${cursor}`, true);
+                        }
+                        reqMaxBytes = Math.min(reqMaxBytes ?? baseMaxResponseBytes, availBytes);
+                    }
                 }
             }
-        } catch (err) {
-            if (signal?.aborted) { throw err; }
-            if (!isRpcUnimplementedError(err)) {
-                console.warn(
-                    `[ContextMonitor] Failed to fetch steps batch [${batchRanges[0].start}-${batchRanges[0].end}] ` +
-                    `for cascade ${cascadeId.substring(0, 8)}: ${err}`,
-                );
+            if (pagesFetched >= MAX_STEP_FETCH_PAGES) {
+                return fail(`Exceeded maximum step pagination pages (${MAX_STEP_FETCH_PAGES}) at offset ${cursor}`, true);
             }
-            hasGaps = true;
+            const remainingStepCapacity = MAX_TRAJECTORY_STEPS - (existingCount + collected.length);
+            if (remainingStepCapacity <= 0) { return fail(maxBoundMsg(cursor)); }
+            const reqEnd = Math.min(cursor + STEP_BATCH_SIZE, targetEnd);
+            pagesFetched++;
+            let resp: Record<string, unknown>;
+            try {
+                resp = await fetchBatch({ start: cursor, end: reqEnd }, reqMaxBytes);
+            } catch (err) {
+                if (signal?.aborted) { throw err; }
+                return fail(logBatchError(cursor, reqEnd, err), isSizeErr(err) || isTrajectoryPollBudgetError(err));
+            }
+            const validated = validateStepsPageResponse(resp, cursor);
+            if (!validated.ok) {
+                if (!validated.stepIndexMismatch) { appendSteps(collected, validated.steps.slice(0, remainingStepCapacity)); }
+                return fail(validated.error ?? `Malformed steps page at offset ${cursor}`);
+            }
+            if (validated.steps.length === 0) { return fail(`Empty steps page at offset ${cursor} (expected up to ${targetEnd})`); }
+            const accepted = !allowExceedTargetEnd && cursor + validated.steps.length > targetEnd
+                ? validated.steps.slice(0, targetEnd - cursor) : validated.steps;
+            if (accepted.length > remainingStepCapacity) {
+                appendSteps(collected, accepted.slice(0, remainingStepCapacity));
+                return fail(maxBoundMsg(cursor), false, cursor + remainingStepCapacity);
+            }
+            appendSteps(collected, accepted);
+            if (accepted.length <= 0) { return fail(`Steps pagination cursor failed to advance at offset ${cursor}`); }
+            cursor += accepted.length;
+        }
+        return { ok: true, covered: cursor, steps: collected };
+    };
+
+    const normalizeSuffixSteps = (
+        steps: Array<Record<string, unknown>>,
+        startOffset: number,
+    ): Array<Record<string, unknown>> => steps.map((s, idx) =>
+        typeof s.stepIndex === 'number' && Number.isFinite(s.stepIndex) && s.stepIndex >= 0
+            ? s
+            : { ...s, stepIndex: startOffset + idx },
+    );
+
+    const recoverOversizeSuffix = async (page0Error: string): Promise<FetchTrajectoryStepsResult> => {
+        const postPage0Budget = getTrajectoryPollBudgetSnapshot();
+        if (
+            postPage0Budget
+            && (postPage0Budget.effectiveRequestsLeft <= 0
+                || postPage0Budget.effectiveBytesLeft <= 0
+                || postPage0Budget.remainingMs <= 50)
+        ) {
+            return { ok: false, steps: [], hasGaps: true, error: page0Error };
+        }
+
+        // Preserve downstream headroom (GM metadata / swarm / activity) when inside a poll budget.
+        const reserveBytes = postPage0Budget
+            ? Math.min(4 * 1024 * 1024, Math.floor(postPage0Budget.effectiveBytesLeft * 0.25))
+            : 0;
+        const reserveRequests = postPage0Budget && postPage0Budget.effectiveRequestsLeft > 2
+            ? Math.min(4, Math.floor(postPage0Budget.effectiveRequestsLeft * 0.25))
+            : 0;
+
+        let probesUsed = 0;
+        let bestOffset = totalSteps;
+        let bestSteps: Array<Record<string, unknown>> = [];
+        let bestWireBytes = 0;
+
+        type ProbeOutcome =
+            | { kind: 'ok'; steps: Array<Record<string, unknown>>; reachedEnd: boolean; wireBytes: number }
+            | { kind: 'too_large' }
+            | { kind: 'stop' };
+
+        const tryProbeOffset = async (offset: number, capBytes: number): Promise<ProbeOutcome> => {
+            if (signal?.aborted) {
+                throw new Error('RPC aborted');
+            }
+            if (probesUsed >= maxSuffixProbes || pagesFetched >= MAX_STEP_FETCH_PAGES) {
+                return { kind: 'stop' };
+            }
+            const snap = getTrajectoryPollBudgetSnapshot();
+            if (snap && (snap.effectiveRequestsLeft <= 0 || snap.effectiveBytesLeft <= 0 || snap.remainingMs <= 50)) {
+                return { kind: 'stop' };
+            }
+            const bytesBefore = snap?.effectiveBytesLeft ?? 0;
+            probesUsed++;
+            pagesFetched++;
+            const reqEnd = Math.min(offset + STEP_BATCH_SIZE, totalSteps);
+            let resp: Record<string, unknown>;
+            try {
+                resp = await fetchBatch({ start: offset, end: reqEnd }, capBytes);
+            } catch (probeErr) {
+                if (signal?.aborted) { throw probeErr; }
+                return isSizeErr(probeErr) ? { kind: 'too_large' } : { kind: 'stop' };
+            }
+            const validated = validateStepsPageResponse(resp, offset);
+            if (!validated.ok || validated.steps.length === 0) {
+                return { kind: 'stop' };
+            }
+            const cappedSteps = validated.steps.length > MAX_TRAJECTORY_STEPS
+                ? validated.steps.slice(0, MAX_TRAJECTORY_STEPS)
+                : validated.steps;
+            const bytesAfter = getTrajectoryPollBudgetSnapshot()?.effectiveBytesLeft ?? 0;
+            const wireBytes = snap ? Math.max(0, bytesBefore - bytesAfter) : 0;
+            return {
+                kind: 'ok',
+                steps: cappedSteps,
+                reachedEnd: offset + cappedSteps.length >= totalSteps,
+                wireBytes,
+            };
+        };
+
+        const canBridgeGap = (gapStart: number, gapEnd: number, reserveFloor: number, pageSize = STEP_BATCH_SIZE): boolean => {
+            const need = Math.ceil(Math.max(0, gapEnd - gapStart) / Math.max(1, Math.min(STEP_BATCH_SIZE, pageSize)));
+            const snap = getTrajectoryPollBudgetSnapshot();
+            const avail = snap ? Math.max(0, snap.effectiveRequestsLeft - reserveFloor) : (MAX_STEP_FETCH_PAGES - pagesFetched);
+            return need <= avail && need <= maxSuffixProbes;
+        };
+
+        const runFineGrainedTailSearch = async (fineStart: number, fineEnd: number): Promise<void> => {
+            let fineLo = fineStart;
+            let fineHi = fineEnd;
+            while (fineLo <= fineHi && probesUsed < maxSuffixProbes) {
+                const snap = getTrajectoryPollBudgetSnapshot();
+                const hasTail = bestSteps.length > 0;
+                let fineCap = baseMaxResponseBytes;
+                if (snap) {
+                    const reqFloor = hasTail ? reserveRequests : 0;
+                    const usable = snap.effectiveBytesLeft > reserveBytes
+                        ? snap.effectiveBytesLeft - reserveBytes
+                        : (hasTail ? 0 : snap.effectiveBytesLeft);
+                    if (snap.effectiveRequestsLeft <= reqFloor || usable <= 0 || snap.remainingMs <= 100) {
+                        break;
+                    }
+                    const isFinalCandidate = fineLo === fineHi || probesUsed + 1 >= maxSuffixProbes || (!hasTail && snap.effectiveRequestsLeft <= 1);
+                    const share = isFinalCandidate ? usable : Math.max(1, Math.floor(usable * 0.6));
+                    fineCap = Math.min(baseMaxResponseBytes, share);
+                    if (hasTail && bestWireBytes > 0 && fineCap <= bestWireBytes) {
+                        break;
+                    }
+                }
+                const isLastProbe = (!hasTail && ((snap ? snap.effectiveRequestsLeft <= 1 : (MAX_STEP_FETCH_PAGES - pagesFetched <= 1)) || probesUsed + 1 >= maxSuffixProbes));
+                const fineMid = isLastProbe ? fineHi : Math.floor((fineLo + fineHi) / 2);
+                const probe = await tryProbeOffset(fineMid, fineCap);
+                if (probe.kind === 'ok') {
+                    if (probe.reachedEnd) {
+                        bestOffset = fineMid;
+                        bestSteps = probe.steps;
+                        bestWireBytes = probe.wireBytes;
+                        fineHi = fineMid - 1;
+                    } else if (bestSteps.length > 0 && fineMid + probe.steps.length >= bestOffset) {
+                        const prefix = probe.steps.slice(0, bestOffset - fineMid);
+                        if (prefix.length + bestSteps.length <= MAX_TRAJECTORY_STEPS) {
+                            bestOffset = fineMid;
+                            bestSteps = [...prefix, ...bestSteps];
+                            fineHi = fineMid - 1;
+                        } else {
+                            break;
+                        }
+                    } else {
+                        const tailEnd = bestSteps.length > 0 ? bestOffset : totalSteps;
+                        const bridgeStart = fineMid + probe.steps.length;
+                        const postSnap = getTrajectoryPollBudgetSnapshot();
+                        const resReq = bestSteps.length > 0 ? reserveRequests : (postSnap && postSnap.effectiveRequestsLeft > 1 ? 1 : 0);
+                        if (!canBridgeGap(bridgeStart, tailEnd, resReq, probe.steps.length)) {
+                            fineLo = fineMid + 1;
+                            continue;
+                        }
+                        const bridge = await fetchSequentialRange(
+                            bridgeStart,
+                            tailEnd,
+                            bestSteps.length === 0,
+                            fineCap,
+                            probe.steps.length + bestSteps.length,
+                            resReq,
+                        );
+                        if (bridge.ok && bridge.covered >= tailEnd) {
+                            bestOffset = fineMid;
+                            bestSteps = bestSteps.length > 0
+                                ? [...probe.steps, ...bridge.steps, ...bestSteps]
+                                : [...probe.steps, ...bridge.steps];
+                            fineHi = fineMid - 1;
+                        } else {
+                            fineLo = fineMid + 1;
+                        }
+                    }
+                } else if (probe.kind === 'too_large') {
+                    fineLo = fineMid + 1;
+                } else {
+                    break;
+                }
+            }
+        };
+
+        const alignedOffsets: number[] = [];
+        for (let off = STEP_BATCH_SIZE; off < totalSteps; off += STEP_BATCH_SIZE) {
+            alignedOffsets.push(off);
+        }
+
+        if (alignedOffsets.length > 0) {
+            // 1. Anchor the live tail first at the final aligned bucket (1..STEP_BATCH_SIZE steps)
+            //    so we obtain a usable suffix immediately before spending budget on earlier probes.
+            const anchorIdx = alignedOffsets.length - 1;
+            const anchorOffset = alignedOffsets[anchorIdx];
+            const anchorSnap = getTrajectoryPollBudgetSnapshot();
+            const anchorUsable = anchorSnap
+                ? (anchorSnap.effectiveBytesLeft > reserveBytes
+                    ? anchorSnap.effectiveBytesLeft - reserveBytes
+                    : anchorSnap.effectiveBytesLeft)
+                : baseMaxResponseBytes;
+            const anchorCap = Math.min(baseMaxResponseBytes, Math.max(1, anchorUsable));
+            const anchorProbe = await tryProbeOffset(anchorOffset, anchorCap);
+
+            if (anchorProbe.kind === 'ok') {
+                if (anchorProbe.reachedEnd) {
+                    bestOffset = anchorOffset;
+                    bestSteps = anchorProbe.steps;
+                    bestWireBytes = anchorProbe.wireBytes;
+                } else {
+                    const gapStart = anchorOffset + anchorProbe.steps.length;
+                    const postAnchorSnap = getTrajectoryPollBudgetSnapshot();
+                    const anchorTailReserve = postAnchorSnap
+                        ? (postAnchorSnap.effectiveRequestsLeft > 2 ? 2 : (postAnchorSnap.effectiveRequestsLeft > 1 ? 1 : 0))
+                        : 0;
+                    if (canBridgeGap(gapStart, totalSteps, anchorTailReserve, anchorProbe.steps.length)) {
+                        const tailRest = await fetchSequentialRange(
+                            gapStart,
+                            totalSteps,
+                            true,
+                            anchorCap,
+                            anchorProbe.steps.length,
+                            anchorTailReserve,
+                        );
+                        if (tailRest.ok && tailRest.covered >= totalSteps) {
+                            bestOffset = anchorOffset;
+                            bestSteps = [...anchorProbe.steps, ...tailRest.steps];
+                        } else if (anchorOffset + 1 < totalSteps) {
+                            await runFineGrainedTailSearch(Math.max(anchorOffset + 1, tailRest.covered), totalSteps - 1);
+                        }
+                    } else if (anchorOffset + 1 < totalSteps) {
+                        const directTailOffset = Math.max(gapStart, totalSteps - Math.max(1, anchorProbe.steps.length));
+                        const directProbe = await tryProbeOffset(directTailOffset, anchorCap);
+                        if (directProbe.kind === 'ok' && directProbe.reachedEnd) {
+                            bestOffset = directTailOffset;
+                            bestSteps = directProbe.steps;
+                            bestWireBytes = directProbe.wireBytes;
+                        } else {
+                            const nextStart = directProbe.kind === 'ok'
+                                ? Math.min(totalSteps - 1, directTailOffset + directProbe.steps.length)
+                                : Math.min(totalSteps - 1, directTailOffset + 1);
+                            await runFineGrainedTailSearch(nextStart, totalSteps - 1);
+                        }
+                    }
+                }
+
+                // 2. Binary-search earlier aligned offsets `[0 .. anchorIdx - 1]` ONLY when we hold a complete live tail.
+                let lo = 0;
+                let hi = bestSteps.length > 0 && bestOffset + bestSteps.length >= totalSteps ? anchorIdx - 1 : -1;
+                while (lo <= hi && probesUsed < maxSuffixProbes) {
+                    const snap = getTrajectoryPollBudgetSnapshot();
+                    let midCap = baseMaxResponseBytes;
+                    if (snap) {
+                        const usableBytes = snap.effectiveBytesLeft - reserveBytes;
+                        if (snap.effectiveRequestsLeft <= reserveRequests || usableBytes <= 0 || snap.remainingMs <= 150) {
+                            break;
+                        }
+                        if (bestWireBytes > 0 && usableBytes <= bestWireBytes) {
+                            break;
+                        }
+                        midCap = Math.min(baseMaxResponseBytes, Math.max(1, Math.floor(usableBytes * 0.6)));
+                        if (bestWireBytes > 0 && midCap <= bestWireBytes) {
+                            break;
+                        }
+                    }
+
+                    const mid = Math.floor((lo + hi) / 2);
+                    const midOffset = alignedOffsets[mid];
+                    const probe = await tryProbeOffset(midOffset, midCap);
+                    if (probe.kind === 'ok') {
+                        if (probe.reachedEnd) {
+                            bestOffset = midOffset;
+                            bestSteps = probe.steps;
+                            bestWireBytes = probe.wireBytes;
+                            hi = mid - 1;
+                        } else {
+                            // Paginated server respected endIndex; bridge strictly `[midOffset + got .. bestOffset)`
+                            // without re-fetching or duplicating the already-captured live tail `bestSteps`.
+                            const gapStart = midOffset + probe.steps.length;
+                            if (gapStart >= bestOffset) {
+                                const prefix = gapStart > bestOffset
+                                    ? probe.steps.slice(0, bestOffset - midOffset)
+                                    : probe.steps;
+                                if (prefix.length + bestSteps.length <= MAX_TRAJECTORY_STEPS) {
+                                    bestOffset = midOffset;
+                                    bestSteps = [...prefix, ...bestSteps];
+                                    hi = mid - 1;
+                                } else {
+                                    break;
+                                }
+                            } else {
+                                if (!canBridgeGap(gapStart, bestOffset, reserveRequests, probe.steps.length)) {
+                                    lo = mid + 1;
+                                    continue;
+                                }
+                                const bridge = await fetchSequentialRange(
+                                    gapStart,
+                                    bestOffset,
+                                    false,
+                                    midCap,
+                                    probe.steps.length + bestSteps.length,
+                                    reserveRequests,
+                                );
+                                if (bridge.ok && bridge.covered === bestOffset) {
+                                    bestOffset = midOffset;
+                                    bestSteps = [...probe.steps, ...bridge.steps, ...bestSteps];
+                                    hi = mid - 1;
+                                } else {
+                                    lo = mid + 1;
+                                }
+                            }
+                        }
+                    } else if (probe.kind === 'too_large') {
+                        lo = mid + 1;
+                    } else {
+                        break;
+                    }
+                }
+            } else if (anchorProbe.kind === 'too_large' && anchorOffset + 1 < totalSteps) {
+                // Even the final aligned bucket exceeded the cap; shrink inside `(anchorOffset .. totalSteps - 1]`.
+                await runFineGrainedTailSearch(anchorOffset + 1, totalSteps - 1);
+            }
+        } else if (totalSteps > 1) {
+            await runFineGrainedTailSearch(1, totalSteps - 1);
+        }
+
+        if (bestSteps.length > 0 && bestOffset + bestSteps.length >= totalSteps) {
+            return {
+                ok: false,
+                steps: normalizeSuffixSteps(bestSteps, bestOffset),
+                hasGaps: true,
+                suffixRecovered: true,
+                suffixStartOffset: bestOffset,
+                error: page0Error,
+            };
+        }
+        return { ok: false, steps: [], hasGaps: true, error: page0Error };
+    };
+
+    const tryTailRecovery = async (reason: string): Promise<FetchTrajectoryStepsResult | null> => {
+        if (totalSteps <= 1) { return null; }
+        const rec = await recoverOversizeSuffix(reason);
+        return rec.suffixRecovered && rec.steps.length > 0 ? rec : null;
+    };
+
+    // Always probe page 0 first:
+    const firstRange = { start: 0, end: Math.min(STEP_BATCH_SIZE, totalSteps) };
+    const initialBudget = getTrajectoryPollBudgetSnapshot();
+    let page0MaxBytes = baseMaxResponseBytes;
+    if (
+        initialBudget
+        && totalSteps > 1
+        && initialBudget.effectiveBytesLeft >= MIN_POLL_BUDGET_FOR_HEADROOM_CAP_BYTES
+    ) {
+        const headroomCap = Math.floor(initialBudget.effectiveBytesLeft * 0.6);
+        if (headroomCap > 0 && headroomCap < page0MaxBytes) {
+            page0MaxBytes = headroomCap;
         }
     }
 
-    // Process remaining batches in groups to avoid bursting concurrent RPC calls
-    for (let groupStart = remainingStart; groupStart < batchRanges.length; groupStart += MAX_CONCURRENT_BATCHES) {
-        const group = batchRanges.slice(groupStart, groupStart + MAX_CONCURRENT_BATCHES);
-        const groupResults = await Promise.allSettled(group.map(fetchBatch));
+    pagesFetched++;
+    let firstResp: Record<string, unknown>;
+    try {
+        firstResp = await fetchBatch(firstRange, page0MaxBytes);
+    } catch (err) {
+        if (signal?.aborted) { throw err; }
+        const message = logBatchError(firstRange.start, firstRange.end, err);
+        if (totalSteps > 1 && isSizeErr(err)) {
+            return recoverOversizeSuffix(message);
+        }
+        return { ok: false, steps: [], hasGaps: true, error: message };
+    }
+
+    const firstPage = validateStepsPageResponse(firstResp, 0);
+    if (!firstPage.ok) {
+        return {
+            ok: false,
+            steps: firstPage.stepIndexMismatch ? [] : firstPage.steps,
+            hasGaps: true,
+            error: firstPage.error ?? 'Malformed steps page at offset 0',
+        };
+    }
+    if (firstPage.steps.length === 0) {
+        return {
+            ok: false,
+            steps: [],
+            hasGaps: true,
+            error: `Empty steps page at offset 0 (expected ${totalSteps})`,
+        };
+    }
+
+    appendSteps(allSteps, firstPage.steps);
+    let contiguousCovered = firstPage.steps.length;
+    if (contiguousCovered >= totalSteps) {
+        return { ok: true, steps: allSteps, hasGaps: false };
+    }
+
+    // Check up front if full pagination exceeds page or active poll request budget:
+    // recover the live tail suffix immediately while budget remains instead of exhausting
+    // requests on the prefix `[0..1200)` and starving the tail every poll (Issue #79).
+    const postPage0Snap = getTrajectoryPollBudgetSnapshot();
+    const prefixTailReserveBytes = postPage0Snap
+        ? Math.min(4 * 1024 * 1024, Math.floor(postPage0Snap.effectiveBytesLeft * 0.25))
+        : 0;
+    const estRemainingPages = Math.ceil((totalSteps - contiguousCovered) / Math.max(1, contiguousCovered));
+    if (
+        estRemainingPages > MAX_STEP_FETCH_PAGES - pagesFetched
+        || (postPage0Snap !== null && estRemainingPages > Math.max(1, postPage0Snap.effectiveRequestsLeft - 2))
+    ) {
+        const budgetReason = `Step pagination requires ~${estRemainingPages} pages beyond budget`;
+        const recovered = await tryTailRecovery(budgetReason);
+        if (recovered) { return recovered; }
+    }
+
+    // Short first page (< STEP_BATCH_SIZE) OR oversized first page (> STEP_BATCH_SIZE):
+    // paginate sequentially, reserving 2 requests + tail bytes for recovery if poll budget runs low.
+    if (contiguousCovered !== firstRange.end) {
+        const rest = await fetchSequentialRange(
+            contiguousCovered,
+            totalSteps,
+            true,
+            undefined,
+            allSteps.length,
+            postPage0Snap ? 2 : 0,
+            prefixTailReserveBytes,
+        );
+        appendSteps(allSteps, rest.steps);
+        if (!rest.ok) {
+            recordError(rest.error ?? `Incomplete steps pagination after offset ${rest.covered}`);
+        } else {
+            contiguousCovered = rest.covered;
+        }
+        if (contiguousCovered < totalSteps) {
+            recordError(`Incomplete step coverage: got ${contiguousCovered} of ${totalSteps}`);
+            if (rest.budgetExhausted) {
+                const recovered = await tryTailRecovery(firstError || 'Sequential step pagination exhausted budget');
+                if (recovered) { return recovered; }
+            }
+        }
+        return {
+            ok: !hasGaps,
+            steps: allSteps,
+            hasGaps,
+            ...(firstError ? { error: firstError } : {}),
+        };
+    }
+
+    // First page covered exact STEP_BATCH_SIZE: plan remaining ranges and fetch in bounded concurrent groups.
+    const pageSize = contiguousCovered;
+    const remainingRanges: Array<{ start: number; end: number }> = [];
+    for (let start = pageSize; start < totalSteps; start += pageSize) {
+        remainingRanges.push({ start, end: Math.min(start + pageSize, totalSteps) });
+        if (remainingRanges.length > MAX_STEP_FETCH_PAGES - pagesFetched) {
+            recordError(`Exceeded maximum step pagination pages (${MAX_STEP_FETCH_PAGES})`);
+            const recovered = await tryTailRecovery(firstError!);
+            if (recovered) { return recovered; }
+            return { ok: false, steps: allSteps, hasGaps: true, error: firstError };
+        }
+    }
+
+    let highestAppendedEnd = contiguousCovered;
+    let stopRemainingGroups = false;
+    let midPaginationBudgetExhausted = false;
+    let switchToSequentialFrom: number | null = null;
+    let fallbackRecoveredTail: { offset: number; steps: Array<Record<string, unknown>> } | null = null;
+
+    for (let groupStart = 0; groupStart < remainingRanges.length && !stopRemainingGroups; ) {
+        if (signal?.aborted) {
+            throw new Error('RPC aborted');
+        }
+        if (highestAppendedEnd >= totalSteps) {
+            break;
+        }
+        const preGroupSnap = getTrajectoryPollBudgetSnapshot();
+        const rangesLeft = remainingRanges.length - groupStart;
+        let maxGroupLen = MAX_CONCURRENT_BATCHES;
+        let nonFinalCap: number | undefined;
+        if (preGroupSnap) {
+            const coversTail = rangesLeft <= MAX_CONCURRENT_BATCHES;
+            if (
+                rangesLeft > preGroupSnap.effectiveRequestsLeft
+                || (!coversTail && preGroupSnap.effectiveRequestsLeft <= 2)
+                || preGroupSnap.remainingMs <= 100
+            ) {
+                recordError(`Reserved poll budget for tail recovery with ${rangesLeft} step pages remaining`);
+                midPaginationBudgetExhausted = true;
+                break;
+            }
+            if (!coversTail) {
+                maxGroupLen = Math.max(1, Math.min(MAX_CONCURRENT_BATCHES, preGroupSnap.effectiveRequestsLeft - 2));
+            }
+        }
+        const group = remainingRanges.slice(groupStart, groupStart + maxGroupLen);
+        const nonFinalCount = group.filter(r => r.end < totalSteps).length;
+        if (preGroupSnap && nonFinalCount > 0 && prefixTailReserveBytes > 0) {
+            const availBytes = preGroupSnap.effectiveBytesLeft - prefixTailReserveBytes;
+            if (availBytes <= 0) {
+                recordError(`Reserved byte budget for tail recovery with ${rangesLeft} step pages remaining`);
+                midPaginationBudgetExhausted = true;
+                break;
+            }
+            nonFinalCap = Math.min(baseMaxResponseBytes, Math.max(1, Math.floor(availBytes / nonFinalCount)));
+        }
+        pagesFetched += group.length;
+        const groupResults = await Promise.allSettled(
+            group.map(range => fetchBatch(range, range.end < totalSteps ? nonFinalCap : undefined)),
+        );
+        const curGroupStart = groupStart;
+        groupStart += group.length;
+
+        const captureFallbackTail = (fromIdx: number): { offset: number; steps: Array<Record<string, unknown>> } | null => {
+            for (let j = fromIdx; j < groupResults.length; j++) {
+                const tailRes = groupResults[j];
+                const tailRange = group[j];
+                if (tailRes.status !== 'fulfilled' || tailRange.end < totalSteps) { continue; }
+                const tailPage = validateStepsPageResponse(tailRes.value, tailRange.start);
+                if (!tailPage.ok || tailPage.steps.length === 0) { continue; }
+                const tailSteps = tailPage.steps.length > MAX_TRAJECTORY_STEPS
+                    ? tailPage.steps.slice(0, MAX_TRAJECTORY_STEPS)
+                    : tailPage.steps;
+                if (tailRange.start + tailSteps.length >= totalSteps) {
+                    return {
+                        offset: tailRange.start,
+                        steps: normalizeSuffixSteps(tailSteps, tailRange.start),
+                    };
+                }
+            }
+            return null;
+        };
 
         for (let i = 0; i < groupResults.length; i++) {
             const result = groupResults[i];
-            if (result.status === 'fulfilled') {
-                const steps = result.value.steps as Array<Record<string, unknown>> | undefined;
-                if (steps && steps.length > 0) {
-                    allSteps.push(...steps);
+            const { start, end } = group[i];
+            const isLastOverall = curGroupStart + i === remainingRanges.length - 1;
+            const expectedLen = end - start;
+
+            // Earlier oversized page in this group already covered `[start .. end)` — never duplicate!
+            if (end <= highestAppendedEnd) {
+                continue;
+            }
+
+            if (result.status !== 'fulfilled') {
+                if (signal?.aborted) {
+                    throw result.reason;
                 }
-            } else {
-                const { start, end } = group[i];
-                if (!isRpcUnimplementedError(result.reason)) {
-                    console.warn(
-                        `[ContextMonitor] Failed to fetch steps batch [${start}-${end}] ` +
-                        `for cascade ${cascadeId.substring(0, 8)}: ${result.reason}`,
-                    );
+                recordError(logBatchError(start, end, result.reason));
+                if (isTrajectoryPollBudgetError(result.reason) || isSizeErr(result.reason)) {
+                    const tail = captureFallbackTail(i + 1);
+                    if (tail && (!fallbackRecoveredTail || tail.offset < fallbackRecoveredTail.offset)) {
+                        fallbackRecoveredTail = tail;
+                    }
+                    midPaginationBudgetExhausted = true;
+                    stopRemainingGroups = true;
+                    break;
                 }
-                hasGaps = true;
+                continue;
+            }
+
+            const page = validateStepsPageResponse(result.value, start);
+            if (!page.ok) {
+                if (!page.stepIndexMismatch) {
+                    const remainingCap = MAX_TRAJECTORY_STEPS - allSteps.length;
+                    if (remainingCap > 0) {
+                        appendSteps(allSteps, page.steps.slice(0, remainingCap));
+                    }
+                }
+                recordError(page.error ?? `Malformed steps page at offset ${start}`);
+                continue;
+            }
+
+            if (page.steps.length === 0) {
+                recordError(`Empty steps page at offset ${start} (expected ${expectedLen})`);
+                continue;
+            }
+
+            // Trim any leading overlap if an earlier page in this group extended past `start`.
+            const overlap = Math.max(0, highestAppendedEnd - start);
+            if (page.steps.length <= overlap) {
+                continue;
+            }
+            const effectiveStart = start + overlap;
+            const trimmedSteps = overlap > 0 ? page.steps.slice(overlap) : page.steps;
+            const remainingStepCap = MAX_TRAJECTORY_STEPS - allSteps.length;
+            if (remainingStepCap <= 0) {
+                recordError(maxBoundMsg(effectiveStart));
+                stopRemainingGroups = true;
+                break;
+            }
+
+            // Short page: keep received prefix and repair `[start + got, end)` sequentially before moving on.
+            if (start + page.steps.length < end) {
+                const safePrefix = trimmedSteps.slice(0, remainingStepCap);
+                appendSteps(allSteps, safePrefix);
+                if (safePrefix.length < trimmedSteps.length) {
+                    recordError(maxBoundMsg(effectiveStart));
+                    stopRemainingGroups = true;
+                    break;
+                }
+                const gapStart = start + page.steps.length;
+                highestAppendedEnd = Math.max(highestAppendedEnd, gapStart);
+                const repaired = await fetchSequentialRange(
+                    gapStart,
+                    end,
+                    isLastOverall,
+                    undefined,
+                    allSteps.length,
+                    postPage0Snap ? 2 : 0,
+                    prefixTailReserveBytes,
+                );
+                appendSteps(allSteps, repaired.steps);
+                highestAppendedEnd = Math.max(highestAppendedEnd, repaired.covered);
+                if (!repaired.ok || repaired.covered < end) {
+                    recordError(repaired.error ?? `Short steps page at offset ${start} (got ${repaired.covered - start} of ${expectedLen})`);
+                    if (repaired.budgetExhausted || (repaired.error && isTrajectoryPollBudgetError(repaired.error))) {
+                        const tail = captureFallbackTail(i + 1);
+                        if (tail && (!fallbackRecoveredTail || tail.offset < fallbackRecoveredTail.offset)) {
+                            fallbackRecoveredTail = tail;
+                        }
+                        midPaginationBudgetExhausted = true;
+                        stopRemainingGroups = true;
+                        break;
+                    }
+                } else if (!hasGaps && contiguousCovered === effectiveStart) {
+                    contiguousCovered = repaired.covered;
+                }
+                if (highestAppendedEnd >= totalSteps) {
+                    stopRemainingGroups = true;
+                    break;
+                }
+                continue;
+            }
+
+            // Server returned MORE than `expectedLen` (e.g. hub ignored `endIndex` and returned a suffix).
+            const pageEnd = start + page.steps.length;
+            if (pageEnd > end) {
+                const safeSteps = trimmedSteps.slice(0, remainingStepCap);
+                appendSteps(allSteps, safeSteps);
+                const coveredEnd = effectiveStart + safeSteps.length;
+                highestAppendedEnd = Math.max(highestAppendedEnd, coveredEnd);
+                if (safeSteps.length < trimmedSteps.length) {
+                    recordError(`Accumulated steps exceeded maximum safe bound (${MAX_TRAJECTORY_STEPS}) at offset ${effectiveStart}`);
+                    stopRemainingGroups = true;
+                    break;
+                }
+                if (!hasGaps && contiguousCovered === effectiveStart) {
+                    contiguousCovered = coveredEnd;
+                }
+                if (coveredEnd >= totalSteps) {
+                    stopRemainingGroups = true;
+                    break;
+                }
+                switchToSequentialFrom = coveredEnd;
+                stopRemainingGroups = true;
+                break;
+            }
+
+            const safeAccepted = trimmedSteps.slice(0, remainingStepCap);
+            appendSteps(allSteps, safeAccepted);
+            const coveredEnd = effectiveStart + safeAccepted.length;
+            highestAppendedEnd = Math.max(highestAppendedEnd, coveredEnd);
+            if (safeAccepted.length < trimmedSteps.length) {
+                recordError(`Accumulated steps exceeded maximum safe bound (${MAX_TRAJECTORY_STEPS}) at offset ${effectiveStart}`);
+                stopRemainingGroups = true;
+                break;
+            }
+            if (!hasGaps && contiguousCovered === effectiveStart) {
+                contiguousCovered = coveredEnd;
             }
         }
     }
 
-    return { steps: allSteps, hasGaps };
+    if (switchToSequentialFrom !== null && switchToSequentialFrom < totalSteps) {
+        const tail = await fetchSequentialRange(
+            switchToSequentialFrom,
+            totalSteps,
+            true,
+            undefined,
+            allSteps.length,
+            postPage0Snap ? 2 : 0,
+            prefixTailReserveBytes,
+        );
+        appendSteps(allSteps, tail.steps);
+        if (!tail.ok) {
+            recordError(tail.error ?? `Incomplete steps pagination after offset ${tail.covered}`);
+            if (tail.budgetExhausted) { midPaginationBudgetExhausted = true; }
+        } else if (!hasGaps && contiguousCovered === switchToSequentialFrom) {
+            contiguousCovered = tail.covered;
+        }
+    }
+
+    if (contiguousCovered < totalSteps) {
+        recordError(`Incomplete step coverage: got ${contiguousCovered} of ${totalSteps}`);
+        if (midPaginationBudgetExhausted) {
+            const recoveryErr = firstError || `Incomplete step coverage at ${contiguousCovered}/${totalSteps}`;
+            const recovered = await tryTailRecovery(recoveryErr);
+            if (
+                recovered
+                && (!fallbackRecoveredTail
+                    || (recovered.suffixStartOffset !== undefined && recovered.suffixStartOffset <= fallbackRecoveredTail.offset))
+            ) {
+                return recovered;
+            }
+            if (fallbackRecoveredTail) {
+                return {
+                    ok: false,
+                    steps: fallbackRecoveredTail.steps,
+                    hasGaps: true,
+                    suffixRecovered: true,
+                    suffixStartOffset: fallbackRecoveredTail.offset,
+                    error: recoveryErr,
+                };
+            }
+        }
+    }
+
+    return {
+        ok: !hasGaps,
+        steps: allSteps,
+        hasGaps,
+        ...(firstError ? { error: firstError } : {}),
+    };
 }
 
 /**
@@ -976,10 +2149,53 @@ export async function getTrajectoryTokenUsage(
     totalSteps: number,
     signal?: AbortSignal
 ): Promise<TokenUsageResult> {
-    const { steps: allSteps, hasGaps } = await fetchTrajectorySteps(ls, cascadeId, totalSteps, signal);
+    const { ok, steps: allSteps, hasGaps, suffixRecovered, suffixStartOffset } = await fetchTrajectorySteps(ls, cascadeId, totalSteps, signal);
     const result = processSteps(allSteps);
-    result.hasGaps = hasGaps;
+    result.hasGaps = hasGaps || !ok;
+    if (
+        suffixRecovered
+        && suffixStartOffset !== undefined
+        && allSteps.length > 0
+        && suffixStartOffset + allSteps.length >= totalSteps
+    ) {
+        result.suffixRecovered = true;
+        result.suffixStartOffset = suffixStartOffset;
+    }
+    if (allSteps.length > 0 && (!result.hasGaps || result.suffixRecovered)) {
+        result._fetchedSteps = allSteps;
+    }
     return result;
+}
+
+/** A member overview needs the last model measurement. Looking at a short
+ * contiguous tail first avoids spending the shared poll allowance on old tool
+ * outputs. Coverage of the earlier steps remains explicitly incomplete. */
+async function getMemberTokenUsage(ls: LSInfo, trajectory: TrajectorySummary, signal?: AbortSignal): Promise<TokenUsageResult> {
+    const { cascadeId, stepCount } = trajectory;
+    for (const width of [12, 40]) {
+        const start = Math.max(0, stepCount - width);
+        try {
+            const response = await rpcCall(ls, 'GetCascadeTrajectorySteps', {
+                cascadeId, stepOffset: start, startIndex: start, endIndex: stepCount,
+            }, 4_000, signal, { maxResponseBytes: 2 * 1024 * 1024 });
+            const page = validateStepsPageResponse(response, start);
+            if (page.ok && page.steps.length === stepCount - start) {
+                const steps = page.steps.map((step, i) => ({ ...step, stepIndex: start + i }));
+                const result = processSteps(steps);
+                result.hasGaps = start > 0;
+                if (start > 0) { result.suffixRecovered = true; result.suffixStartOffset = start; }
+                result._fetchedSteps = steps;
+                if (result.lastModelUsage || start === 0) { return result; }
+            }
+        } catch (error) {
+            if (signal?.aborted) { throw error; }
+            break;
+        }
+        if (start === 0) { break; }
+    }
+    const unavailable = processSteps([]);
+    unavailable.hasGaps = true;
+    return unavailable;
 }
 
 const MAX_IMAGE_WORKFLOW_CHILDREN = 16;
@@ -1106,14 +2322,19 @@ export async function refreshWorkflowImageUsage(ls: LSInfo, usage: ContextUsage,
 /**
  * Fetch full user status including model configs, plan info, and credits.
  */
-export async function fetchFullUserStatus(ls: LSInfo, signal?: AbortSignal): Promise<FullUserStatus> {
+export async function fetchFullUserStatus(ls: LSInfo, signal?: AbortSignal): Promise<FullUserStatusFetchResult> {
     try {
         const resp = await rpcCall(ls, 'GetUserStatus', {
             metadata: { ideName: 'antigravity', extensionName: 'antigravity' }
         }, 10000, signal);
         const rawUserStatus = resp?.userStatus;
         if (!rawUserStatus || typeof rawUserStatus !== 'object' || Array.isArray(rawUserStatus)) {
-            return { configs: [], userInfo: null };
+            return {
+                ok: false,
+                configs: [],
+                userInfo: null,
+                error: 'Missing or invalid userStatus payload in GetUserStatus response',
+            };
         }
         const userStatus = rawUserStatus as Record<string, unknown>;
 
@@ -1215,6 +2436,12 @@ export async function fetchFullUserStatus(ls: LSInfo, signal?: AbortSignal): Pro
             }
         }
 
+        const parsePlanLimit = (value: unknown): number | null => {
+            if (typeof value === 'string' && /^(?:-1|\d+)$/.test(value.trim())) {
+                value = Number(value);
+            }
+            return typeof value === 'number' && Number.isSafeInteger(value) && value >= -1 ? value : null;
+        };
         const parseNum = (v: unknown): number => {
             if (typeof v === 'number') { return Number.isFinite(v) ? v : 0; }
             if (typeof v === 'string') { const n = parseInt(v, 10); return Number.isFinite(n) ? n : 0; }
@@ -1231,12 +2458,12 @@ export async function fetchFullUserStatus(ls: LSInfo, signal?: AbortSignal): Pro
             userTierId: (userTier?.id as string) || '',
             defaultModelLabel: defaultModelCfg?.label || defaultModelId || '',
             planLimits: {
-                maxNumChatInputTokens: parseNum(planInfo?.maxNumChatInputTokens),
-                maxNumPremiumChatMessages: parseNum(planInfo?.maxNumPremiumChatMessages),
-                maxCustomChatInstructionCharacters: parseNum(planInfo?.maxCustomChatInstructionCharacters),
-                maxNumPinnedContextItems: parseNum(planInfo?.maxNumPinnedContextItems),
-                maxLocalIndexSize: parseNum(planInfo?.maxLocalIndexSize),
-                monthlyFlexCreditPurchaseAmount: parseNum(planInfo?.monthlyFlexCreditPurchaseAmount),
+                maxNumChatInputTokens: parsePlanLimit(planInfo?.maxNumChatInputTokens),
+                maxNumPremiumChatMessages: parsePlanLimit(planInfo?.maxNumPremiumChatMessages),
+                maxCustomChatInstructionCharacters: parsePlanLimit(planInfo?.maxCustomChatInstructionCharacters),
+                maxNumPinnedContextItems: parsePlanLimit(planInfo?.maxNumPinnedContextItems),
+                maxLocalIndexSize: parsePlanLimit(planInfo?.maxLocalIndexSize),
+                monthlyFlexCreditPurchaseAmount: parsePlanLimit(planInfo?.monthlyFlexCreditPurchaseAmount),
             },
             teamConfig: {
                 allowMcpServers: Boolean(teamCfg?.allowMcpServers),
@@ -1278,13 +2505,15 @@ export async function fetchFullUserStatus(ls: LSInfo, signal?: AbortSignal): Pro
         }
 
         return {
+            ok: true,
             configs,
             userInfo,
             ...(groupedModels ? { groupedModels } : {}),
             rawResponse: resp as Record<string, unknown>,
         };
-    } catch {
-        return { configs: [], userInfo: null };
+    } catch (err) {
+        const message = err instanceof Error ? err.message : String(err ?? 'Unknown GetUserStatus error');
+        return { ok: false, configs: [], userInfo: null, error: message };
     }
 }
 
@@ -1591,16 +2820,6 @@ export async function fetchUserQuotaSummary(
 }
 
 /**
- * @deprecated Use `fetchFullUserStatus()` instead.
- * Backward-compatible wrapper — relies on `GetUserStatus` (never calling
- * `GetCommandModelConfigs`, which returns `501 unimplemented` on v2.34+ App & v2.7+ IDE).
- */
-export async function fetchModelConfigs(ls: LSInfo, signal?: AbortSignal): Promise<ModelConfig[]> {
-    const result = await fetchFullUserStatus(ls, signal);
-    return result.configs;
-}
-
-/**
  * Safely read model configs without hitting `GetCommandModelConfigs` `501 unimplemented`
  * spam on Antigravity App v2.34+ / IDE v2.7+ hubs. Uses `GetUserStatus` directly and
  * degrades cleanly to `[]` if unavailable.
@@ -1627,12 +2846,9 @@ export async function getContextUsage(
     customLimits?: Record<string, number>,
     signal?: AbortSignal
 ): Promise<ContextUsage> {
-    const result = await getTrajectoryTokenUsage(
-        ls,
-        trajectory.cascadeId,
-        trajectory.stepCount,
-        signal
-    );
+    const result = trajectory.manifestMember && trajectory.stepCount > 0
+        ? await getMemberTokenUsage(ls, trajectory, signal)
+        : await getTrajectoryTokenUsage(ls, trajectory.cascadeId, trajectory.stepCount, signal);
 
     const effectiveModel = result.model || trajectory.requestedModel || trajectory.generatorModel;
     // When the latest token snapshot came directly from a planner/executor step
@@ -1671,6 +2887,7 @@ export async function getContextUsage(
         compressionDetected: result.checkpointCompressionDetected,
         checkpointCompressionDrop: result.checkpointCompressionDrop,
         hasGaps: result.hasGaps,
+        ...(result.suffixRecovered ? { suffixRecovered: true, suffixStartOffset: result.suffixStartOffset } : {}),
         checkpointModel: result.checkpointModel,
         ...(result.orchestratorConfig ? { orchestratorConfig: result.orchestratorConfig } : {}),
         ...(result.orchestratorHistory ? { orchestratorHistory: result.orchestratorHistory } : {}),
@@ -1683,5 +2900,14 @@ export async function getContextUsage(
         branchName: trajectory.branchName,
         gitRootUri: trajectory.gitRootUri,
     };
-    return refreshWorkflowImageUsage(ls, usage, signal);
+    const finalUsage = await refreshWorkflowImageUsage(ls, usage, signal);
+    if (result._fetchedSteps && result._fetchedSteps.length > 0) {
+        Object.defineProperty(finalUsage, '_fetchedSteps', {
+            value: result._fetchedSteps,
+            enumerable: false,
+            configurable: true,
+            writable: true,
+        });
+    }
+    return finalUsage;
 }

@@ -39,7 +39,9 @@ function makeMinimalPluginEntries(version: string) {
         { name: 'antigravity-context-monitor/plugin.json', data: Buffer.from(manifest, 'utf8'), mode: 0o100644 },
         { name: 'antigravity-context-monitor/sidecars/context_monitor/sidecar.json', data: Buffer.from(sidecarJson, 'utf8'), mode: 0o100644 },
         { name: 'antigravity-context-monitor/sidecars/context_monitor/main.mjs', data: Buffer.from('console.log("sidecar");\n', 'utf8'), mode: 0o100755 },
+        { name: 'antigravity-context-monitor/sidecars/context_monitor/runtime/out/app/sidecar-bundle.js', data: Buffer.from(serverJs, 'utf8'), mode: 0o100644 },
         { name: 'antigravity-context-monitor/sidecars/context_monitor/runtime/out/app/sidecar-server.js', data: Buffer.from(serverJs, 'utf8'), mode: 0o100644 },
+        { name: 'antigravity-context-monitor/sidecars/context_monitor/runtime/out/app/sidecar-runtime.js', data: Buffer.from(serverJs, 'utf8'), mode: 0o100644 },
     ];
 }
 
@@ -56,11 +58,13 @@ function createFakeInstalledPlugin(dir: string, version: string) {
         'utf8',
     );
     fs.writeFileSync(path.join(dir, 'sidecars', 'context_monitor', 'main.mjs'), 'console.log("ok");\n', 'utf8');
-    fs.writeFileSync(
-        path.join(dir, 'sidecars', 'context_monitor', 'runtime', 'out', 'app', 'sidecar-server.js'),
-        `module.exports = { version: "${version}" };\n`,
-        'utf8',
-    );
+    for (const f of ['sidecar-bundle.js', 'sidecar-server.js', 'sidecar-runtime.js']) {
+        fs.writeFileSync(
+            path.join(dir, 'sidecars', 'context_monitor', 'runtime', 'out', 'app', f),
+            `module.exports = { version: "${version}" };\n`,
+            'utf8',
+        );
+    }
 }
 
 describe('install-app-plugin CLI parsing, security & cross-platform helpers', () => {
@@ -273,10 +277,76 @@ describe('install-app-plugin CLI parsing, security & cross-platform helpers', ()
         // Valid ZIP extracts both Stored and Deflate entries cleanly
         const okDest = path.join(tmpBase, 'ok-out');
         const extracted = mod.extractZipBufferSafely(validZip, okDest);
-        expect(extracted.extractedFiles).toBe(4);
+        expect(extracted.extractedFiles).toBe(6);
         expect(extracted.pluginRoot).toBe(path.join(okDest, 'antigravity-context-monitor'));
         const validated = mod.validatePluginBundle(extracted.pluginRoot, { requireSidecarEntrypoints: true });
         expect(validated.version).toBe('1.17.6');
+    });
+
+    it('preserves unrelated target directories and reports a failed rollback without deleting the backup', async () => {
+        const mod = await loadInstaller();
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'acm-target-ownership-'));
+        tmpDirs.push(root);
+        const source = path.join(root, 'source');
+        const other = path.join(root, 'workspace');
+        const target = path.join(root, 'installed');
+        createFakeInstalledPlugin(source, '1.18.0');
+        fs.mkdirSync(other);
+        fs.writeFileSync(path.join(other, 'notes'), 'keep');
+        expect(() => mod.installPluginAtomic(source, other)).toThrow(/unrecognized plugin destination/);
+        expect(() => mod.runInstaller({ action: 'uninstall', target: other })).toThrow(/unrecognized plugin destination/);
+        expect(fs.readFileSync(path.join(other, 'notes'), 'utf8')).toBe('keep');
+        createFakeInstalledPlugin(target, '1.17.11');
+        let backup = '';
+        expect(() => mod.installPluginAtomic(source, target, {
+            onBeforeSwap: ({ backupDir }: { backupDir: string }) => {
+                backup = backupDir;
+                fs.mkdirSync(target);
+                fs.writeFileSync(path.join(target, 'external'), 'keep');
+                throw new Error('concurrent change');
+            },
+        })).toThrow(/rollback failed.*Target .*present.*Backup .*present/i);
+        expect(JSON.parse(fs.readFileSync(path.join(backup, 'plugin.json'), 'utf8')).version).toBe('1.17.11');
+        expect(fs.readFileSync(path.join(target, 'external'), 'utf8')).toBe('keep');
+    });
+
+    it.skipIf(process.platform === 'win32')('uses the selected home and PATH for all delegated agy commands', async () => {
+        const mod = await loadInstaller();
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'acm-agy-env-'));
+        tmpDirs.push(root);
+        const bin = path.join(root, 'bin');
+        fs.mkdirSync(bin);
+        fs.writeFileSync(path.join(bin, 'agy'), '#!/bin/sh\nprintf "%s|%s\\n" "$HOME" "$*" >> "$ACM_TEST_LOG"\n', { mode: 0o755 });
+        const log = path.join(root, 'calls.log');
+        const env = { HOME: root, PATH: bin, ACM_TEST_LOG: log };
+        const source = path.join(root, 'source');
+        createFakeInstalledPlugin(source, '1.18.0');
+        mod.runInstaller({ action: 'install', useCli: true, source, env });
+        createFakeInstalledPlugin(mod.getDefaultTargetDir(env), '1.18.0');
+        mod.runInstaller({ action: 'uninstall', useCli: true, env });
+        expect(fs.readFileSync(log, 'utf8').trim().split('\n')).toEqual([
+            root + '|--version', root + '|plugin install ' + source,
+            root + '|--version', root + '|plugin enable antigravity-context-monitor',
+            root + '|--version', root + '|plugin uninstall antigravity-context-monitor',
+        ]);
+    });
+
+    it('leaves a long-lived owner lock and incompatible config schema intact', async () => {
+        const mod = await loadInstaller();
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'acm-config-owner-'));
+        tmpDirs.push(root);
+        const configPath = path.join(root, 'config.json');
+        const lockPath = configPath + '.acm.lock';
+        const raw = JSON.stringify({ plugins: [{ name: 'third-party', grants: ['keep'] }] });
+        fs.writeFileSync(configPath, raw);
+        const lock = JSON.stringify({ pid: process.pid, owner: 'test', nonce: 'live', acquiredAt: 10 });
+        fs.writeFileSync(lockPath, lock);
+        expect(mod.ensurePluginEnabled({ configPath, lockTimeoutMs: 0, lockStaleMs: 1 }).method)
+            .toBe('skipped-concurrent-lock');
+        expect(fs.readFileSync(lockPath, 'utf8')).toBe(lock);
+        fs.unlinkSync(lockPath);
+        expect(mod.ensurePluginEnabled({ configPath }).method).toBe('skipped-invalid-config');
+        expect(fs.readFileSync(configPath, 'utf8')).toBe(raw);
     });
 
     it('performs atomic backup + swap and rolls back cleanly on swap failure', async () => {
@@ -301,6 +371,84 @@ describe('install-app-plugin CLI parsing, security & cross-platform helpers', ()
         expect(swap).toEqual({ previousVersion: '1.17.5', replaced: true });
         expect(JSON.parse(fs.readFileSync(path.join(targetDir, 'plugin.json'), 'utf8')).version).toBe('1.17.6');
         expect(fs.readdirSync(path.dirname(targetDir))).toEqual(['antigravity-context-monitor']);
+    });
+
+    it('Issue #79: installPluginAtomic falls back to transactional in-place swap & rollback under Windows EBUSY directory locks', async () => {
+        const mod = await loadInstaller();
+        const tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), 'acm-win-ebusy-'));
+        tmpDirs.push(tmpBase);
+
+        const targetDir = path.join(tmpBase, 'plugins', 'antigravity-context-monitor');
+        const srcNew = path.join(tmpBase, 'src-1.18.0');
+        createFakeInstalledPlugin(targetDir, '1.17.11');
+        fs.mkdirSync(path.join(targetDir, 'sidecars', 'context_monitor', 'old-sub'), { recursive: true });
+        fs.writeFileSync(path.join(targetDir, 'sidecars', 'context_monitor', 'old-sub', 'obsolete.js'), '// stale', 'utf8');
+        createFakeInstalledPlugin(srcNew, '1.18.0');
+        fs.writeFileSync(path.join(srcNew, 'new-asset.txt'), 'brand-new', 'utf8');
+
+        const alwaysEbusyRenameDir = () => {
+            throw Object.assign(new Error('EBUSY: resource busy or locked, rename'), { code: 'EBUSY' });
+        };
+        const ebusySidecarRmdir = (dirPath: string) => {
+            if (dirPath.includes('context_monitor')) {
+                throw Object.assign(new Error('EBUSY: resource busy or locked, rmdir'), { code: 'EBUSY' });
+            }
+            fs.rmdirSync(dirPath);
+        };
+
+        // 1. Mid-swap file lock rolls back cleanly without deleting locked CWD or leaving .acm-stage-* debris
+        expect(() => mod.installPluginAtomic(srcNew, targetDir, {
+            renameDir: alwaysEbusyRenameDir,
+            rmdirDir: ebusySidecarRmdir,
+            renameFile: (src: string, dest: string) => {
+                if (dest.endsWith('main.mjs')) {
+                    throw Object.assign(new Error('EPERM: locked main.mjs'), { code: 'EPERM' });
+                }
+                fs.renameSync(src, dest);
+            },
+        })).toThrow(/locked main\.mjs/i);
+
+        expect(JSON.parse(fs.readFileSync(path.join(targetDir, 'plugin.json'), 'utf8')).version).toBe('1.17.11');
+        expect(fs.readFileSync(path.join(targetDir, 'sidecars', 'context_monitor', 'old-sub', 'obsolete.js'), 'utf8')).toBe('// stale');
+        expect(fs.existsSync(path.join(targetDir, 'new-asset.txt'))).toBe(false);
+        expect(fs.readdirSync(targetDir).some(f => f.includes('.acm-stage-'))).toBe(false);
+        expect(fs.readdirSync(path.dirname(targetDir))).toEqual(['antigravity-context-monitor']);
+
+        // 2. Rollback failure preserves backup directory and throws clear error
+        expect(() => mod.installPluginAtomic(srcNew, targetDir, {
+            renameDir: alwaysEbusyRenameDir,
+            rmdirDir: ebusySidecarRmdir,
+            renameFile: (src: string, dest: string) => {
+                if (dest.endsWith('main.mjs')) {
+                    throw Object.assign(new Error('EPERM: locked main.mjs'), { code: 'EPERM' });
+                }
+                fs.renameSync(src, dest);
+            },
+            rollbackRenameFile: (src: string, dest: string) => {
+                if (dest.endsWith('plugin.json')) {
+                    throw Object.assign(new Error('EBUSY: locked on rollback'), { code: 'EBUSY' });
+                }
+                fs.renameSync(src, dest);
+            },
+        })).toThrow(/rollback failed.*Backup .*present/i);
+
+        // Clean backup artifacts from forced rollback-failure case and re-seed for success test
+        const targetDirOk = path.join(tmpBase, 'plugins-ok', 'antigravity-context-monitor');
+        createFakeInstalledPlugin(targetDirOk, '1.17.11');
+        fs.mkdirSync(path.join(targetDirOk, 'sidecars', 'context_monitor', 'old-sub'), { recursive: true });
+        fs.writeFileSync(path.join(targetDirOk, 'sidecars', 'context_monitor', 'old-sub', 'obsolete.js'), '// stale', 'utf8');
+
+        // 3. Successful transactional in-place upgrade even when targetDir & sidecars/context_monitor are locked!
+        const res = mod.installPluginAtomic(srcNew, targetDirOk, {
+            renameDir: alwaysEbusyRenameDir,
+            rmdirDir: ebusySidecarRmdir,
+        });
+        expect(res).toEqual({ previousVersion: '1.17.11', replaced: true });
+        expect(JSON.parse(fs.readFileSync(path.join(targetDirOk, 'plugin.json'), 'utf8')).version).toBe('1.18.0');
+        expect(fs.readFileSync(path.join(targetDirOk, 'new-asset.txt'), 'utf8')).toBe('brand-new');
+        expect(fs.existsSync(path.join(targetDirOk, 'sidecars', 'context_monitor', 'old-sub', 'obsolete.js'))).toBe(false);
+        expect(fs.readdirSync(targetDirOk).some(f => f.includes('.acm-stage-'))).toBe(false);
+        expect(fs.readdirSync(path.dirname(targetDirOk))).toEqual(['antigravity-context-monitor']);
     });
 
     it('enables plugin in config.json atomically without clobbering sibling user settings', async () => {
@@ -501,6 +649,7 @@ describe('install-app-plugin CLI parsing, security & cross-platform helpers', ()
             checkRemote: true,
             probeHealthFn: async (port: number) => ({
                 ok: port === 54321,
+                surface: 'app-sidecar',
                 version: '1.17.5',
                 pid: 42424,
             }),
@@ -558,6 +707,17 @@ describe('install-app-plugin CLI parsing, security & cross-platform helpers', ()
             hasChecksums: true,
             error: null,
         });
+
+        const runtimePackage = path.join(targetDir, 'sidecars', 'context_monitor', 'runtime', 'package.json');
+        fs.writeFileSync(runtimePackage, JSON.stringify({ version: '1.17.6', buildId: 'on-disk', bundled: true }));
+        const probe = (health: Record<string, unknown>) => mod.collectStatus({
+            env: fakeEnv, platform: 'darwin', probeCdpPort: false, probeHealthFn: async () => health,
+        });
+        const info = { ok: true, surface: 'app-sidecar', version: '1.17.6', pid: 42 };
+        expect((await probe({ ...info, surface: 'other' })).sidecar).toMatchObject({ processActive: false, runningPid: null });
+        expect((await probe(info)).sidecar.reloadRequired).toBe(true);
+        expect((await probe({ ...info, buildId: 'older' })).sidecar.reloadRequired).toBe(true);
+        expect((await probe({ ...info, buildId: 'on-disk' })).sidecar.reloadRequired).toBe(false);
 
         const cdpGuide = mod.runInstaller({ action: 'print-cdp-guide' }).guide;
         expect(cdpGuide).toContain('--remote-debugging-port=0');
@@ -752,16 +912,22 @@ describe('install-app-plugin CLI parsing, security & cross-platform helpers', ()
         expect(ps1Text).toContain('ELECTRON_RUN_AS_NODE');
     });
 
-    it('maintains 100% parity with src/app/cdp-launcher.ts across macOS, Windows, and Linux', async () => {
+    it('maintains 100% parity with src/core/cdp-launcher-core.ts and src/app/cdp-launcher.ts across macOS, Windows, and Linux', async () => {
         const installer = await loadInstaller();
+        const coreLauncherMod = await import('../src/core/cdp-launcher-core');
         const launcherMod = await import('../src/app/cdp-launcher');
         const tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), 'acm-parity-'));
         tmpDirs.push(tmpBase);
 
-        // 1. Exact script & asset parity
+        // 1. Exact single-source parity with src/core/cdp-launcher-core.ts AND parity with src/app/cdp-launcher.ts
+        expect(installer.buildMacOsLauncherPlist()).toBe(coreLauncherMod.buildMacOsInfoPlist());
         expect(installer.buildMacOsLauncherPlist()).toBe(launcherMod.buildMacOsInfoPlist());
         expect(installer.buildMacOsLauncherScript('/Applications/Antigravity.app'))
-            .toBe(launcherMod.buildMacOsLauncherScript('/Applications/Antigravity.app'));
+            .toBe(coreLauncherMod.buildMacOsLauncherScript('/Applications/Antigravity.app'));
+        expect(installer.buildMacOsLauncherScript('/Applications/Antigravity.app').replace(/\n{2,}/g, '\n'))
+            .toBe(launcherMod.buildMacOsLauncherScript('/Applications/Antigravity.app').replace(/\n{2,}/g, '\n'));
+        expect(installer.buildLinuxLauncherScript('/opt/Antigravity/antigravity'))
+            .toBe(coreLauncherMod.buildLinuxLauncherScript('/opt/Antigravity/antigravity'));
         expect(installer.buildLinuxLauncherScript('/opt/Antigravity/antigravity'))
             .toBe(launcherMod.buildLinuxLauncherScript('/opt/Antigravity/antigravity'));
         expect(installer.buildLinuxDesktopEntry('/home/alice/.local/bin/antigravity-cdp', '/home/alice/.local/share/icons/hicolor/scalable/apps/antigravity-cdp.svg'))
@@ -783,7 +949,7 @@ describe('install-app-plugin CLI parsing, security & cross-platform helpers', ()
 
         const staleUserBundle = path.join(macHome, 'Applications', 'Antigravity (CDP).app');
         fs.mkdirSync(path.join(staleUserBundle, 'Contents', 'MacOS'), { recursive: true });
-        fs.writeFileSync(path.join(staleUserBundle, 'Contents', 'Info.plist'), 'old', 'utf8');
+        fs.writeFileSync(path.join(staleUserBundle, 'Contents', 'Info.plist'), installer.buildMacOsLauncherPlist(), 'utf8');
         fs.writeFileSync(path.join(staleUserBundle, 'Contents', 'MacOS', 'launch'), 'old', 'utf8');
 
         const macSetup = installer.setupCdpLauncher({
@@ -869,5 +1035,74 @@ describe('install-app-plugin CLI parsing, security & cross-platform helpers', ()
         expect(linuxRemove.removed).toBe(true);
         expect(fs.existsSync(linuxSvg)).toBe(false);
         expect(dbCalls).toEqual(['update-desktop-database', 'update-desktop-database']);
+    });
+
+    it('supports --local-dir, --no-remote-fallback, downloaded-file mode, and stdin-pipe mode outside repo checkout', async () => {
+        const mod = await loadInstaller();
+        const tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), 'acm-standalone-modes-'));
+        tmpDirs.push(tmpBase);
+
+        // 1. CLI parser handles --local-dir & --no-remote-fallback
+        const localSrc = path.join(tmpBase, 'local-plugin');
+        createFakeInstalledPlugin(localSrc, '1.18.0');
+        expect(mod.parseInstallerArgs(['--install', '--local-dir', localSrc, '--no-remote-fallback'])).toMatchObject({
+            action: 'install',
+            localDir: path.resolve(localSrc),
+            noRemoteFallback: true,
+        });
+        expect(mod.parseInstallerArgs([`--local-dir=${localSrc}`, '--no-remote-fallback'])).toMatchObject({
+            localDir: path.resolve(localSrc),
+            noRemoteFallback: true,
+        });
+
+        // 2. Copy generated installer to a temp path OUTSIDE the repository
+        const downloadedCopy = path.join(tmpBase, 'acm-install.mjs');
+        fs.copyFileSync(INSTALLER_PATH, downloadedCopy);
+
+        // Downloaded file mode: --install --no-remote-fallback without --local-dir MUST fail closed (never hit GitHub or assume parent repo)
+        const fakeHome = path.join(tmpBase, 'isolated-home');
+        fs.mkdirSync(fakeHome, { recursive: true });
+        let failedClosed = false;
+        try {
+            execFileSync(process.execPath, [downloadedCopy, '--install', '--no-remote-fallback'], {
+                cwd: tmpBase,
+                encoding: 'utf8',
+                env: { ...process.env, HOME: fakeHome, USERPROFILE: fakeHome },
+                stdio: ['ignore', 'pipe', 'pipe'],
+            });
+        } catch {
+            failedClosed = true;
+        }
+        expect(failedClosed).toBe(true);
+
+        // Downloaded file mode: --install --local-dir ... --no-remote-fallback succeeds cleanly
+        const fileInstallOut = execFileSync(
+            process.execPath,
+            [downloadedCopy, '--install', '--local-dir', localSrc, '--no-remote-fallback', '--json'],
+            {
+                cwd: tmpBase,
+                encoding: 'utf8',
+                env: { ...process.env, HOME: fakeHome, USERPROFILE: fakeHome },
+            },
+        );
+        expect(JSON.parse(fileInstallOut)).toMatchObject({
+            sourceMode: 'local',
+            version: '1.18.0',
+        });
+
+        // 3. Stdin pipe mode: `node - --status --json < acm-install.mjs` works cleanly
+        const stdinStatusOut = execFileSync(process.execPath, ['-', '--status', '--json'], {
+            cwd: tmpBase,
+            input: fs.readFileSync(downloadedCopy),
+            encoding: 'utf8',
+            env: { ...process.env, HOME: fakeHome, USERPROFILE: fakeHome },
+        });
+        expect(JSON.parse(stdinStatusOut)).toMatchObject({
+            action: 'status',
+            appPlugin: {
+                installed: true,
+                version: '1.18.0',
+            },
+        });
     });
 });

@@ -139,8 +139,10 @@ export interface GMCallEntry {
     createdAt: string;
     /** chatStartMetadata.latestStableMessageIndex */
     latestStableMessageIndex: number;
-    /** chatStartMetadata.startStepIndex */
+    /** chatStartMetadata.startStepIndex, with numeric zero retained for legacy consumers. */
     startStepIndex: number;
+    /** False when the numeric fallback was used instead of a reported step. */
+    startStepIndexReported?: boolean;
     /** chatStartMetadata.checkpointIndex */
     checkpointIndex: number;
     /** Checkpoint summaries extracted from messagePrompts */
@@ -315,6 +317,10 @@ export interface GMTrackerState {
     baselines: Record<string, number>;
     /** cascadeId → call count baselines to isolate quota cycles (added v1.13.2) */
     callBaselines?: Record<string, number>;
+    /** An initial inventory has not been seen yet. */
+    needsStartupBaseline?: boolean;
+    /** Conversations present at startup whose first metadata read has not succeeded. */
+    pendingStartupBaselines?: string[];
     /** executionIds of calls archived to dailyStore by per-pool resets (added v1.13.4) */
     archivedCallIds?: string[];
     /** Model ID → ISO cutoff timestamp: calls created before cutoff are excluded (added v1.14.0) */
@@ -417,6 +423,7 @@ export function slimCallForPersistence(call: GMCallEntry): GMCallEntry {
         responseTokens: call.responseTokens,
         cacheReadTokens: call.cacheReadTokens,
         cacheCreationTokens: call.cacheCreationTokens,
+        ...(call.cacheTelemetryAvailable !== undefined ? { cacheTelemetryAvailable: call.cacheTelemetryAvailable } : {}),
         apiProvider: call.apiProvider,
         ttftSeconds: call.ttftSeconds,
         streamingSeconds: call.streamingSeconds,
@@ -448,6 +455,7 @@ export function slimCallForPersistence(call: GMCallEntry): GMCallEntry {
         createdAt: call.createdAt,
         latestStableMessageIndex: call.latestStableMessageIndex,
         startStepIndex: call.startStepIndex,
+        startStepIndexReported: call.startStepIndexReported,
         checkpointIndex: call.checkpointIndex,
         checkpointSummaries: [],
         systemContextItems: [],

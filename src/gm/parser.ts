@@ -15,6 +15,28 @@ import type {
     TokenBreakdownGroup,
 } from './types';
 
+declare module './types' {
+    interface GMCallEntry {
+        /**
+         * Provider-measured cache read tokens preserving genuine absence (`null`)
+         * distinct from a measured `0`. `cacheReadTokens` remains a safe numeric count
+         * (`0` when omitted) so existing arithmetic callers stay strictly type-safe.
+         */
+        cacheReadTokensNullable?: number | null;
+        /**
+         * Provider-measured cache creation tokens preserving genuine absence (`null`)
+         * distinct from a measured `0`.
+         */
+        cacheCreationTokensNullable?: number | null;
+        /**
+         * True when the raw provider payload explicitly supplied at least one finite
+         * non-negative numeric cache counter (`cacheReadTokens` or `cacheCreationTokens`);
+         * false when cache counts were absent/omitted from `usage`.
+         */
+        cacheTelemetryAvailable?: boolean;
+    }
+}
+
 // ─── Primitive Parsers ───────────────────────────────────────────────────────
 
 /**
@@ -48,6 +70,28 @@ export function parseInt0(s: unknown): number {
     if (!s) { return 0; }
     const n = parseInt(String(s), 10);
     return isNaN(n) ? 0 : n;
+}
+
+/**
+ * Parse an optional non-negative integer counter while preserving genuine absence (`null`)
+ * distinct from an explicitly measured `0`.
+ * Returns `null` for `undefined`, `null`, empty/whitespace strings, negative numbers,
+ * non-finite values, or non-numeric strings.
+ */
+export function parseOptionalNonNegInt(s: unknown): number | null {
+    if (s === null || s === undefined) { return null; }
+    if (typeof s === 'number') {
+        if (!Number.isFinite(s) || s < 0) { return null; }
+        return Math.round(s);
+    }
+    if (typeof s === 'string') {
+        const trimmed = s.trim();
+        if (!trimmed) { return null; }
+        if (!/^\d+(?:\.\d+)?$/.test(trimmed)) { return null; }
+        const n = Number(trimmed);
+        return Number.isFinite(n) && n >= 0 ? Math.round(n) : null;
+    }
+    return null;
 }
 
 /** Capacity is a positive, exact token count; malformed telemetry is unknown. */
@@ -767,6 +811,23 @@ export function mergeGMCallEntries(primary: GMCallEntry, fallback: GMCallEntry):
     if (mergedResponseModel && mergedModel) {
         registerResponseModelAlias(mergedResponseModel, mergedModel);
     }
+    const primaryReadNull = primary.cacheReadTokensNullable;
+    const fallbackReadNull = fallback.cacheReadTokensNullable;
+    const primaryCreateNull = primary.cacheCreationTokensNullable;
+    const fallbackCreateNull = fallback.cacheCreationTokensNullable;
+    const mergedReadNull = primaryReadNull !== undefined && primaryReadNull !== null
+        ? primaryReadNull
+        : (fallbackReadNull !== undefined ? fallbackReadNull : primaryReadNull);
+    const mergedCreateNull = primaryCreateNull !== undefined && primaryCreateNull !== null
+        ? primaryCreateNull
+        : (fallbackCreateNull !== undefined ? fallbackCreateNull : primaryCreateNull);
+    const mergedCacheTelemetryAvailable = (primary.cacheTelemetryAvailable === true || fallback.cacheTelemetryAvailable === true)
+        ? true
+        : (primary.cacheTelemetryAvailable === false && fallback.cacheTelemetryAvailable === false
+            ? false
+            : (primary.cacheTelemetryAvailable ?? fallback.cacheTelemetryAvailable));
+    const useFallbackCacheCounts = primary.cacheTelemetryAvailable === false && fallback.cacheTelemetryAvailable === true;
+
     return {
         ...primary,
         model: mergedModel,
@@ -774,6 +835,15 @@ export function mergeGMCallEntries(primary: GMCallEntry, fallback: GMCallEntry):
         modelSource: useFallbackModel ? fallback.modelSource : primary.modelSource,
         responseModel: mergedResponseModel,
         modelAccuracy: mergedResponseModel ? 'exact' : primary.modelAccuracy,
+        cacheReadTokens: useFallbackCacheCounts
+            ? fallback.cacheReadTokens
+            : (mergedReadNull !== undefined && mergedReadNull !== null ? mergedReadNull : primary.cacheReadTokens),
+        cacheCreationTokens: useFallbackCacheCounts
+            ? fallback.cacheCreationTokens
+            : (mergedCreateNull !== undefined && mergedCreateNull !== null ? mergedCreateNull : primary.cacheCreationTokens),
+        ...(mergedReadNull !== undefined ? { cacheReadTokensNullable: mergedReadNull } : {}),
+        ...(mergedCreateNull !== undefined ? { cacheCreationTokensNullable: mergedCreateNull } : {}),
+        ...(mergedCacheTelemetryAvailable !== undefined ? { cacheTelemetryAvailable: mergedCacheTelemetryAvailable } : {}),
         systemPromptSnippet: primary.systemPromptSnippet || fallback.systemPromptSnippet,
         toolCount: Math.max(primary.toolCount, fallback.toolCount),
         toolNames: uniqueStrings([...primary.toolNames, ...fallback.toolNames]),
@@ -808,7 +878,8 @@ export function mergeGMCallEntries(primary: GMCallEntry, fallback: GMCallEntry):
         createdAt: isValidCallTimestamp(primary.createdAt) ? primary.createdAt
             : isValidCallTimestamp(fallback.createdAt) ? fallback.createdAt : primary.createdAt || fallback.createdAt,
         latestStableMessageIndex: primary.latestStableMessageIndex || fallback.latestStableMessageIndex,
-        startStepIndex: primary.startStepIndex || fallback.startStepIndex,
+        startStepIndex: primary.startStepIndexReported === false ? fallback.startStepIndex : primary.startStepIndex,
+        startStepIndexReported: primary.startStepIndexReported === false ? fallback.startStepIndexReported : primary.startStepIndexReported,
         checkpointIndex: primary.checkpointIndex || fallback.checkpointIndex,
         ...(primary.executionModel || fallback.executionModel
             ? { executionModel: primary.executionModel || fallback.executionModel } : {}),
@@ -1062,6 +1133,11 @@ export function parseGMEntry(gm: Record<string, unknown>): GMCallEntry {
     const executionModel = resolveConcreteModelId(readPath(gm, ['plannerConfig', 'planExecuteConfig', 'executionModel']));
     const modelDisplayName = cleanModelCandidate(cm.modelDisplayName);
 
+    const reportedStart = parseOptionalNonNegInt(csm.startStepIndex);
+    const parsedCacheRead = parseOptionalNonNegInt(usage.cacheReadTokens);
+    const parsedCacheCreation = parseOptionalNonNegInt(usage.cacheCreationTokens);
+    const cacheTelemetryAvailable = parsedCacheRead !== null || parsedCacheCreation !== null;
+
     return {
         stepIndices: (gm.stepIndices as number[]) || [],
         executionId: (gm.executionId as string) || '',
@@ -1074,8 +1150,11 @@ export function parseGMEntry(gm: Record<string, unknown>): GMCallEntry {
         outputTokens: parseInt0(usage.outputTokens as string),
         thinkingTokens: parseInt0(usage.thinkingOutputTokens as string),
         responseTokens: parseInt0(usage.responseOutputTokens as string),
-        cacheReadTokens: parseInt0(usage.cacheReadTokens as string),
-        cacheCreationTokens: parseInt0(usage.cacheCreationTokens as string),
+        cacheReadTokens: parsedCacheRead ?? 0,
+        cacheCreationTokens: parsedCacheCreation ?? 0,
+        cacheReadTokensNullable: parsedCacheRead,
+        cacheCreationTokensNullable: parsedCacheCreation,
+        cacheTelemetryAvailable,
         apiProvider: (usage.apiProvider as string) || '',
         ttftSeconds: parseDuration(cm.timeToFirstToken as string),
         streamingSeconds: parseDuration(cm.streamingDuration as string),
@@ -1106,7 +1185,8 @@ export function parseGMEntry(gm: Record<string, unknown>): GMCallEntry {
         tokenBreakdownGroups,
         createdAt: (csm.createdAt as string) || '',
         latestStableMessageIndex: parseInt0(csm.latestStableMessageIndex),
-        startStepIndex: parseInt0(csm.startStepIndex),
+        startStepIndex: reportedStart ?? 0,
+        startStepIndexReported: reportedStart !== null,
         checkpointIndex: parseInt0(csm.checkpointIndex),
         checkpointSummaries: promptData.checkpointSummaries,
         systemContextItems: promptData.systemContextItems,

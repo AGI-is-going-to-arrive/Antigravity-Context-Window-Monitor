@@ -1,34 +1,22 @@
-.vscode/**
-.vscode-test/**
-.github/**
-.gitignore
-src/**
-!src/images/**
-node_modules/**
-out/**/*.test.js
-out/**/*.test.d.ts
-tsconfig.json
-*.map
-**/*.map
-package-lock.json
-*.vsix
+# Strict allowlist for Antigravity IDE VSIX packaging.
+# Everything is excluded by default; only the bundled extension, 256x256 icon, and slim docs are shipped.
+**
+!package.json
+!README.md
+!CHANGELOG.md
+!LICENSE
+!assets/icon.png
+!dist-stage/ide/extension.js
 
-# Development-only files (not needed in the published extension)
+# Explicit exclusions (defense-in-depth; never shipped in VSIX)
+readme_CN.md
+DESIGN.md
+PRODUCT.md
 AGENTS.md
-app-plugin/**
-dist/**
-scripts/**
-tests/**
-__mocks__/**
-.agents/**
-.ccg/**
-.claude/**
-.playwright-mcp/**
-cache/**
-diag-output/**
-diag-scripts/**
-llmdoc/**
 docs/**
-vitest.config.ts
-.DS_Store
-Dockerfile*
+src/**
+tests/**
+scripts/**
+app-plugin/**
+out-tsc/**
+**/*.map

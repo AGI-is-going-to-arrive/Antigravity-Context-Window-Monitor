@@ -37,3 +37,4 @@ export {
     normalizeStepsByModelRecord,
     ActivityTracker,
 } from './activity';
+export type { ActivityTrackerConfig } from './activity/tracker';

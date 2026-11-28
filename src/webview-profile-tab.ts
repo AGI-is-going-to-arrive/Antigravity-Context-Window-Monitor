@@ -3,12 +3,17 @@
 // AI credits & expiry day, and collapsible plan limits / feature / team config.
 
 import { currentAICredits } from './account-credits';
-import { formatNumber, getLanguage, tBi } from './i18n';
+import { formatNumber, getLanguage, tBi, tHtml } from './i18n-core';
 import { formatQuotaWindowPercent } from './monitor-overview';
 import { ModelConfig, UserStatusInfo, resolveModelId, type QuotaWindowSummary, type UserQuotaSummary } from './models';
+import {
+    projectQuotaDisplay,
+    type QuotaDirectionMode,
+    type QuotaWindowMode,
+} from './quota-runway';
 import { formatResetAbsolute, formatResetCountdown } from './reset-time';
 import { ICON } from './webview-icons';
-import { esc, tBiHtml } from './webview-helpers';
+import { esc, richTipBiAttrs as richTipAttrs, slugKey, tBiHtml } from './webview-helpers';
 import { getDaysUntilBillingDay } from './billing-day';
 import { groupModelQuotas, type QuotaEffort } from './model-quota';
 
@@ -16,26 +21,50 @@ export interface ModelQuotaGridOptions {
     embedded?: boolean;
     hideHeading?: boolean;
     quotaSummary?: UserQuotaSummary | null;
+    /** Active quota horizon window mode (`'5h' | '7d' | 'tightest'`). Default: `'tightest'`. */
+    quotaWindowMode?: QuotaWindowMode;
+    /** Active quota display direction (`'remaining' | 'used'`). Default: `'remaining'`. */
+    quotaDirectionMode?: QuotaDirectionMode;
 }
 
-function slugKey(raw: string): string {
-    const cleaned = raw.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
-    return (cleaned || 'item').slice(0, 48);
+export interface ProfileContentOptions {
+    /** When true (default, fail-closed), plaintext name/email are NEVER emitted into `data-real` attributes in HTML. */
+    privacyMasked?: boolean;
+    /** Opaque account handle bound to `#profileBillingDayInput` instead of plaintext `data-email`. */
+    accountHandle?: string;
+    /** Active quota horizon window mode (`'5h' | '7d' | 'tightest'`). */
+    quotaWindowMode?: QuotaWindowMode;
+    /** Active quota display direction (`'remaining' | 'used'`). */
+    quotaDirectionMode?: QuotaDirectionMode;
 }
 
-function richTipAttrs(
-    key: string,
-    titleEn: string,
-    titleZh: string,
-    bodyEn: string,
-    bodyZh: string,
-    metaEn?: string,
-    metaZh?: string,
-): string {
-    const title = tBi(titleEn, titleZh);
-    const body = tBi(bodyEn, bodyZh);
-    const meta = metaEn || metaZh ? tBi(metaEn || '', metaZh || '') : '';
-    return ` data-popover-key="${esc(key)}" data-tip-title="${esc(title)}" data-tip-body="${esc(body)}"${meta ? ` data-tip-meta="${esc(meta)}"` : ''}`;
+/**
+ * Mask an email address safely for UI display, including 1-character local parts
+ * (e.g. `a@sentinel-secret.example` -> `****@sentinel-secret.example`,
+ * `secret.alice@example.com` -> `se****@example.com`, already-masked `****@redacted` -> unchanged).
+ */
+export function maskEmailForDisplay(email: string): string {
+    const trimmed = (email || '').trim();
+    if (!trimmed) { return '***'; }
+    const atIdx = trimmed.indexOf('@');
+    if (atIdx < 0) { return '***'; }
+    const local = trimmed.slice(0, atIdx);
+    const domain = trimmed.slice(atIdx); // includes '@'
+    if (/^\*+$/.test(local)) { return `${local}${domain}`; }
+    if (local.length <= 2) {
+        return `****${domain}`;
+    }
+    return `${local.slice(0, 2)}****${domain}`;
+}
+
+/** Mask a display name for privacy mode without leaking full identity. */
+export function maskNameForDisplay(name: string): string {
+    const trimmed = (name || '').trim();
+    if (!trimmed) { return '***'; }
+    if (/^\*+$/.test(trimmed) || /^Account\s+#\d+$/i.test(trimmed)) {
+        return trimmed;
+    }
+    return `${trimmed.charAt(0)}***`;
 }
 
 function buildModelTagRichTipAttrs(
@@ -152,6 +181,7 @@ export function buildProfileContent(
     configs: ModelConfig[],
     billingDay?: number,
     quotaSummary?: UserQuotaSummary | null,
+    options?: ProfileContentOptions,
 ): string {
     if (!userInfo) {
         return `
@@ -164,11 +194,18 @@ export function buildProfileContent(
             </section>`;
     }
 
+    const privacyMasked = options?.privacyMasked !== false;
+    const accountHandle = options?.accountHandle || '';
     const sortedConfigs = sortModels(configs, userInfo.modelSortOrder);
-    const quota = buildModelQuotaGrid(sortedConfigs, { embedded: true, quotaSummary });
+    const quota = buildModelQuotaGrid(sortedConfigs, {
+        embedded: true,
+        quotaSummary,
+        quotaWindowMode: options?.quotaWindowMode,
+        quotaDirectionMode: options?.quotaDirectionMode,
+    });
     return `
         <div class="profile-page">
-            ${buildAccountSection(userInfo)}
+            ${buildAccountSection(userInfo, privacyMasked)}
             <div class="profile-body-grid">
                 <section class="profile-quota" aria-labelledby="profile-quota-heading">
                     <header class="profile-section-header">
@@ -177,7 +214,7 @@ export function buildProfileContent(
                     </header>
                     ${quota || `<p class="empty-msg">${tBiHtml('Waiting for model quota data.', '等待模型配额数据。')}</p>`}
                 </section>
-                ${buildCreditSection(userInfo, billingDay)}
+                ${buildCreditSection(userInfo, billingDay, privacyMasked, accountHandle)}
             </div>
             <details id="profile-plan-details" class="profile-technical">
                 <summary><span>${tBiHtml('Plan limits and capabilities', '计划限制与功能配置')}</span></summary>
@@ -200,33 +237,47 @@ export function sortModels(configs: ModelConfig[], sortOrder: string[]): ModelCo
 
 // ─── Section Builders ────────────────────────────────────────────────────────
 
-function buildAccountSection(userInfo: UserStatusInfo): string {
+function buildAccountSection(userInfo: UserStatusInfo, privacyMasked = true): string {
     const name = userInfo.name || '';
     const email = userInfo.email || '';
-    const maskedName = name ? `${name.charAt(0)}***` : '***';
-    const maskedEmail = email ? email.replace(/^(.{2}).*(@.*)$/, '$1****$2') : '***';
+    const maskedName = maskNameForDisplay(name);
+    const maskedEmail = maskEmailForDisplay(email);
     const plan = [...new Set([userInfo.planName, userInfo.userTierName].filter(Boolean))].join(' · ');
+    const nameNode = privacyMasked
+        ? `<span class="account-name" data-masked="${esc(maskedName)}">${esc(maskedName)}</span>`
+        : `<span class="account-name" data-real="${esc(name)}" data-masked="${esc(maskedName)}">${esc(name || maskedName)}</span>`;
+    const emailNode = privacyMasked
+        ? `<span class="account-email" data-masked="${esc(maskedEmail)}">${esc(maskedEmail)}</span>`
+        : `<span class="account-email" data-real="${esc(email)}" data-masked="${esc(maskedEmail)}">${esc(email || maskedEmail)}</span>`;
+    const btnCls = privacyMasked ? 'privacy-btn active' : 'privacy-btn';
+    const ariaPressed = privacyMasked ? 'true' : 'false';
     return `
         <header class="profile-identity">
             <div>
                 <h2>${tBiHtml('Account', '账号')}</h2>
                 <div class="account-info">
-                    <span class="account-name" data-real="${esc(name)}" data-masked="${esc(maskedName)}">${esc(maskedName)}</span>
-                    <span class="account-email" data-real="${esc(email)}" data-masked="${esc(maskedEmail)}">${esc(maskedEmail)}</span>
+                    ${nameNode}
+                    ${emailNode}
                 </div>
                 ${plan ? `<p class="profile-plan-name">${esc(plan)}</p>` : ''}
             </div>
-            <button type="button" class="privacy-btn active" id="privacyToggle" aria-pressed="true">
+            <button type="button" class="${btnCls}" id="privacyToggle" aria-pressed="${ariaPressed}">
                 ${ICON.shield}<span>${tBiHtml('Privacy mask', '隐私遮罩')}</span>
             </button>
         </header>`;
 }
 
-function buildCreditSection(userInfo: UserStatusInfo, billingDay?: number): string {
+function buildCreditSection(
+    userInfo: UserStatusInfo,
+    billingDay?: number,
+    privacyMasked = true,
+    accountHandle = '',
+): string {
     const day = billingDay || 0;
     const credits = currentAICredits(userInfo.availableCredits || []);
     const readings = credits.length ? credits : [{ creditType: '', creditAmount: null }];
     const expiryHtml = creditExpiryHtml(getDaysUntilBillingDay(day));
+    const resolvedHandle = accountHandle || (privacyMasked ? 'acct-active' : (userInfo.email || 'acct-active'));
     const creditsHeadingTip = richTipAttrs(
         'profile-ai-credits-heading',
         'Account AI Credits',
@@ -249,7 +300,7 @@ function buildCreditSection(userInfo: UserStatusInfo, billingDay?: number): stri
         <section class="profile-ai" aria-labelledby="profile-ai-heading">
             <header class="profile-section-header">
                 <h2 id="profile-ai-heading"${creditsHeadingTip}>${tBiHtml('AI credits', 'AI 积分')}</h2>
-                <a class="profile-activity" href="https://antigravity.google/g1-activity" target="_blank" rel="noopener noreferrer"><span>${tBiHtml('Credit activity', '积分记录')}</span> ${ICON.externalLink}</a>
+                <a class="profile-activity" data-action="openExternalUrl" data-url="https://antigravity.google/g1-activity" href="https://antigravity.google/g1-activity" target="_blank" rel="noopener noreferrer"><span>${tBiHtml('Credit activity', '积分记录')}</span> ${ICON.externalLink}</a>
             </header>
             <dl class="profile-credit-balances">
                 ${readings.map(c => `<div class="profile-credit-balance">
@@ -262,12 +313,12 @@ function buildCreditSection(userInfo: UserStatusInfo, billingDay?: number): stri
                 <div class="num-spinner">
                     <button type="button" class="num-spinner-btn decrement" aria-label="${esc(tBi('Decrease day', '减小日期'))}">−</button>
                     <input type="number" id="profileBillingDayInput" class="threshold-input"
-                        data-email="${esc(userInfo.email || '')}" value="${day}" min="0" max="31" step="1" />
+                        data-account-handle="${esc(resolvedHandle)}" value="${day}" min="0" max="31" step="1" />
                     <button type="button" class="num-spinner-btn increment" aria-label="${esc(tBi('Increase day', '增大日期'))}">+</button>
                 </div>
                 <button type="button" class="action-btn" id="profileBillingDaySaveBtn"><span>${tBiHtml('Save', '保存')}</span></button>
             </div>
-            <p class="profile-expiry">${expiryHtml} · ${tBiHtml('Use 0 to turn off the countdown.', '填 0 可关闭倒计时。')}</p>
+            <p class="profile-expiry">${expiryHtml} · ${tBiHtml('Local reminder for this account. Enter 0 to turn it off.', '仅设置当前账号的本地提醒，填 0 可关闭倒计时。')}</p>
             <span id="profileBillingDayFeedback" class="threshold-feedback" role="status"></span>
         </section>`;
 }
@@ -284,7 +335,8 @@ function quotaEffortsHtml(efforts: QuotaEffort[]): string {
 }
 
 function quotaResetLabel(resetTime: string, precise = false): string {
-    const countdown = formatResetCountdown(resetTime);
+    const now = Date.now();
+    const countdown = Date.parse(resetTime) > now ? formatResetCountdown(resetTime, now) : '';
     const absolute = formatResetAbsolute(resetTime, { includeSeconds: precise });
     return countdown ? `${countdown} · ${absolute}` : absolute;
 }
@@ -293,55 +345,65 @@ function quotaPercentage(fraction: number): string {
     return new Intl.NumberFormat(getLanguage() === 'zh' ? 'zh-CN' : 'en-US', { maximumFractionDigits: 8 }).format(fraction * 100);
 }
 
+function formatProjectedPct(pct: number | null): string {
+    if (pct === null || !Number.isFinite(pct)) { return tBi('Unknown', '未知'); }
+    return formatQuotaWindowPercent(Math.max(0, Math.min(1, pct / 100)));
+}
+
 function renderDualWindowBar(
     groupKey: string,
     groupLabel: string,
     kind: '5h' | 'weekly',
     win: QuotaWindowSummary,
     scopePrefix: string,
+    directionMode: QuotaDirectionMode = 'remaining',
+    isActiveFocusWindow = false,
 ): string {
-    const labelHtml = kind === '5h' ? tBiHtml('5-Hour', '5 小时') : tBiHtml('Weekly', '每周');
-    const labelPlain = kind === '5h' ? tBi('5-Hour', '5 小时') : tBi('Weekly', '每周');
-    const rawFrac = win.remainingFraction;
-    const frac = typeof rawFrac === 'number' && Number.isFinite(rawFrac) && rawFrac >= 0 && rawFrac <= 1 ? rawFrac : null;
-    const pct = frac === null ? null : Number((frac * 100).toFixed(8));
-    const barTone = pct === null ? '' : pct <= 20 ? 'is-attention' : pct < 50 ? 'is-warn' : 'is-healthy';
-    const barColor = pct === null ? '' : pct <= 20 ? 'var(--ed-danger-fill)'
-        : pct < 50 ? 'var(--ed-warn-fill)' : 'var(--ed-good-fill)';
-    const pctPlain = frac === null ? tBi('Unknown', '未知') : formatQuotaWindowPercent(frac);
-    const pctHtml = frac === null ? `<span class="is-unknown">${tBiHtml('Unknown', '未知')}</span>` : esc(pctPlain);
+    const horizon: '5h' | '7d' = kind === '5h' ? '5h' : '7d';
+    const proj = projectQuotaDisplay({
+        windowMode: horizon,
+        directionMode,
+        window5h: horizon === '5h' ? { remainingFraction: win.remainingFraction } : undefined,
+        window7d: horizon === '7d' ? { remainingFraction: win.remainingFraction } : undefined,
+    });
+    const labelHtml = kind === '5h' ? tHtml('quota.window5h') : tHtml('quota.window7d');
+    const labelPlain = kind === '5h' ? tBi('5-hour window', '5 小时窗口') : tBi('Weekly window', '每周窗口');
+    const dirLabelHtml = tBiHtml(proj.directionLabelEn, proj.directionLabelZh);
+    const remPct = proj.remainingPct;
+    const dispPct = proj.displayPct;
+    const barTone = remPct === null ? '' : remPct <= 20 ? 'is-attention' : remPct < 50 ? 'is-warn' : 'is-healthy';
+    const barColor = remPct === null ? '' : remPct <= 20 ? 'var(--ed-danger-fill)'
+        : remPct < 50 ? 'var(--ed-warn-fill)' : 'var(--ed-good-fill)';
+    const pctPlain = proj.isUnavailable
+        ? tBi('Unknown', '未知')
+        : `${formatProjectedPct(dispPct)} ${tBi(proj.directionLabelEn, proj.directionLabelZh)}`;
+    const pctHtml = proj.isUnavailable
+        ? `<span class="is-unknown">${tBiHtml('Unknown', '未知')}</span>`
+        : `<span class="quota-dual-pct-val">${esc(formatProjectedPct(dispPct))}</span> <span class="quota-dir-tag" data-quota-window-tag="${horizon}" data-quota-direction="${directionMode}">${dirLabelHtml}</span>`;
     const parsedReset = win.resetTime ? Date.parse(win.resetTime) : Number.NaN;
     const resetHtml = win.resetTime && Number.isFinite(parsedReset) && parsedReset > 0
         ? `${tBiHtml('Reset', '重置')} ${esc(quotaResetLabel(win.resetTime))}`
         : tBiHtml('Reset time unavailable', '暂无重置时间');
-    const winTip = kind === '5h'
-        ? richTipAttrs(
-            `${scopePrefix}-win-${slugKey(groupKey)}-5h`,
-            `${groupLabel} · 5-Hour Window`,
-            `${groupLabel} · 5 小时配额窗口`,
-            `Short-term shared quota remaining across all listed ${groupLabel} models (${pctPlain}).`,
-            `${groupLabel} 配额池内所有模型共用的 5 小时短期剩余额度（${pctPlain}）。`,
-            'Both 5-Hour and Weekly rolling windows apply simultaneously — whichever hits 0% first pauses this pool.',
-            '5 小时与每周双滚动窗口同时生效，任一窗口先归零都会暂停该池调用。',
-        )
-        : richTipAttrs(
-            `${scopePrefix}-win-${slugKey(groupKey)}-weekly`,
-            `${groupLabel} · Weekly Window`,
-            `${groupLabel} · 每周配额窗口`,
-            `Weekly shared quota remaining across all listed ${groupLabel} models (${pctPlain}).`,
-            `${groupLabel} 配额池内所有模型共用的每周总额度剩余比例（${pctPlain}）。`,
-            'Both 5-Hour and Weekly rolling windows apply simultaneously — whichever hits 0% first pauses this pool.',
-            '5 小时与每周双滚动窗口同时生效，任一窗口先归零都会暂停该池调用。',
-        );
+    const bothWinEn = 'Both 5h and 7d rolling windows apply; whichever hits 0% remaining pauses this pool.';
+    const bothWinZh = '5h 与 7d 双窗口同时生效，任一归零即暂停。';
+    const winTip = richTipAttrs(
+        `${scopePrefix}-win-${slugKey(groupKey)}-${kind === '5h' ? '5h' : 'weekly'}`,
+        `${groupLabel} · ${horizon} (${proj.directionLabelEn})`,
+        `${groupLabel} · ${horizon} 配额窗口（${proj.directionLabelZh}）`,
+        `${kind === '5h' ? 'Short-term 5h' : 'Weekly 7d'} shared quota (${pctPlain}) for ${groupLabel}.`,
+        `${groupLabel} 配额池共用的 ${horizon} 配额（${pctPlain}）。`,
+        bothWinEn,
+        bothWinZh,
+    );
     return `
-        <div class="quota-dual-item" data-quota-window="${kind}"${winTip}>
+        <div class="quota-dual-item${isActiveFocusWindow ? ' is-primary-window' : ''}" data-quota-window="${kind}" data-quota-horizon="${horizon}" data-quota-direction="${directionMode}"${winTip}>
             <div class="quota-dual-head">
                 <span class="quota-dual-label">${labelHtml}</span>
                 <span class="quota-dual-pct">${pctHtml}</span>
             </div>
-            <div class="quota-bar-wrap${pct === null ? ' is-unknown' : ''}" role="progressbar" aria-label="${esc(`${groupLabel} ${labelPlain}`)}"
-                aria-valuemin="0" aria-valuemax="100"${pct === null ? '' : ` aria-valuenow="${pct}"`} aria-valuetext="${esc(pctPlain)}">
-                ${pct === null ? '' : `<div class="quota-bar ${barTone}" style="width:${pct}%;background:${barColor}"></div>`}
+            <div class="quota-bar-wrap${dispPct === null ? ' is-unknown' : ''}" role="progressbar" aria-label="${esc(`${groupLabel} ${labelPlain} ${tBi(proj.directionLabelEn, proj.directionLabelZh)}`)}"
+                aria-valuemin="0" aria-valuemax="100"${dispPct === null ? '' : ` aria-valuenow="${dispPct}"`} aria-valuetext="${esc(pctPlain)}">
+                ${dispPct === null ? '' : `<div class="quota-bar ${barTone}" style="width:${dispPct}%;background:${barColor}"></div>`}
             </div>
             <div class="model-card-meta"><span class="model-card-reset">${resetHtml}</span></div>
         </div>`;
@@ -355,6 +417,8 @@ export function buildModelQuotaGrid(
     if (groups.length === 0) { return ''; }
 
     const scopePrefix = options.embedded ? 'profile-quota' : 'models-quota';
+    const windowMode: QuotaWindowMode = options.quotaWindowMode ?? 'tightest';
+    const directionMode: QuotaDirectionMode = options.quotaDirectionMode ?? 'remaining';
 
     // Index live tagDescription from raw ModelConfigs so Notice / catalog badges
     // surface the real backend note rather than repeating the badge text.
@@ -384,15 +448,30 @@ export function buildModelQuotaGrid(
     const cards = groups.map((group, gIdx) => {
         const groupSlug = `${gIdx}-${slugKey(group.key)}`;
         const minimum = group.minimum;
-        const pct = minimum === null ? null : Number((minimum * 100).toFixed(8));
-        const barTone = pct === null ? '' : pct <= 20 ? 'is-attention' : pct < 50 ? 'is-warn' : 'is-healthy';
-        const barColor = pct === null ? '' : pct <= 20 ? 'var(--ed-danger-fill)'
-            : pct < 50 ? 'var(--ed-warn-fill)' : 'var(--ed-good-fill)';
-        const lowLabel = minimum === null ? '' : quotaPercentage(minimum);
-        const highLabel = group.maximum === null ? '' : quotaPercentage(group.maximum);
+        const primaryProj = projectQuotaDisplay({
+            windowMode,
+            directionMode,
+            window5h: group.fiveHourQuota
+                ? { remainingFraction: group.fiveHourQuota.remainingFraction }
+                : (minimum !== null ? { remainingFraction: minimum } : undefined),
+            window7d: group.weeklyQuota
+                ? { remainingFraction: group.weeklyQuota.remainingFraction }
+                : undefined,
+        });
+        const remPct = minimum === null ? null : Number((minimum * 100).toFixed(8));
+        const pct = primaryProj.displayPct;
+        const barTone = remPct === null ? '' : remPct <= 20 ? 'is-attention' : remPct < 50 ? 'is-warn' : 'is-healthy';
+        const barColor = remPct === null ? '' : remPct <= 20 ? 'var(--ed-danger-fill)'
+            : remPct < 50 ? 'var(--ed-warn-fill)' : 'var(--ed-good-fill)';
+        const displayFrac = (frac: number) => directionMode === 'used' ? Math.max(0, 1 - frac) : frac;
+        const lowLabel = minimum === null ? '' : quotaPercentage(displayFrac(directionMode === 'used' && group.maximum !== null ? group.maximum : minimum));
+        const highLabel = group.maximum === null ? '' : quotaPercentage(displayFrac(directionMode === 'used' && minimum !== null ? minimum : group.maximum));
+        const winBadgeHtml = `<span class="quota-mode-badge" data-quota-window-mode="${esc(windowMode)}" data-quota-effective-window="${esc(primaryProj.effectiveWindow ?? 'unknown')}" data-quota-direction="${esc(directionMode)}">${tBiHtml(primaryProj.metricLabelEn, primaryProj.metricLabelZh)}</span>`;
         const percentagePlain = pct === null ? tBi('Unknown', '未知') : group.quotaDiffers && lowLabel !== highLabel
             ? `${lowLabel}–${highLabel}%` : `${lowLabel}%`;
-        const percentageHtml = pct === null ? tBiHtml('Unknown', '未知') : esc(percentagePlain);
+        const percentageHtml = pct === null
+            ? tBiHtml('Unknown', '未知')
+            : `${winBadgeHtml} <span class="model-card-pct-val">${esc(percentagePlain)}</span>`;
         // Compare raw readings in the helper; retain a notice when a genuine
         // difference is smaller than the precision useful in a quota card.
         const precisionNotice = group.quotaDiffers && lowLabel === highLabel
@@ -410,7 +489,7 @@ export function buildModelQuotaGrid(
                 'Available reasoning effort tiers for this model family (Low / Medium / High / Extra High). Higher tiers think deeper and typically use quota faster.',
                 '该模型系列当前可用的推理档位（低 / 中 / 高 / 超高）。档位越高推理越深入，通常也会更快消耗配额。',
                 `Available tiers: ${listEn} · All tiers share this pool's quota.`,
-                `当前可用档位：${listZh} · 各档位共用该配额池额度。`,
+                `当前可用档位：${listZh} · 各档位共用该配额池配额。`,
             );
         };
         const members = group.pool ? `<ul class="model-quota-members">${group.members.map((member, mIdx) => {
@@ -445,7 +524,7 @@ export function buildModelQuotaGrid(
                     <summary><span>${tBiHtml('Readings by effort', '各档位读数')}</span></summary>
                     <ul>${group.readings.map(reading => `
                         <li><span>${esc(reading.effort ? `${reading.familyLabel} (${quotaEffortLabel(reading.effort)})` : reading.label)}</span>
-                            <span>${reading.remaining === null ? tBiHtml('Unknown', '未知') : `${esc(quotaPercentage(reading.remaining))}%`}</span>
+                            <span>${reading.remaining === null ? tBiHtml('Unknown', '未知') : `${esc(quotaPercentage(displayFrac(reading.remaining)))}% (${tBiHtml(primaryProj.directionLabelEn, primaryProj.directionLabelZh)})`}</span>
                             <span class="model-quota-reading-reset">${reading.resetTime
             ? `${tBiHtml('Reset', '重置')} ${esc(quotaResetLabel(reading.resetTime, true))}`
             : tBiHtml('Reset time unavailable', '暂无重置时间')}</span></li>`).join('')}
@@ -471,23 +550,26 @@ export function buildModelQuotaGrid(
             names ? `包含模型：${names}` : undefined,
         );
         const hasDualWindow = Boolean(group.fiveHourQuota || group.weeklyQuota);
+        const dualHeaderSummary = hasDualWindow
+            ? `<span class="model-card-pct${primaryProj.isUnavailable ? ' is-unknown' : ''}" data-quota-projected="true">${winBadgeHtml}${primaryProj.isUnavailable ? '' : ` <span class="model-card-pct-val">${esc(formatProjectedPct(primaryProj.displayPct))}</span>`}</span>`
+            : `<span class="model-card-pct${pct === null ? ' is-unknown' : ''}">${percentageHtml}</span>`;
         const metersHtml = hasDualWindow
             ? `<div class="quota-dual-row">
-                    ${group.fiveHourQuota ? renderDualWindowBar(groupSlug, group.label, '5h', group.fiveHourQuota, scopePrefix) : ''}
-                    ${group.weeklyQuota ? renderDualWindowBar(groupSlug, group.label, 'weekly', group.weeklyQuota, scopePrefix) : ''}
+                    ${group.fiveHourQuota ? renderDualWindowBar(groupSlug, group.label, '5h', group.fiveHourQuota, scopePrefix, directionMode, primaryProj.effectiveWindow === '5h') : ''}
+                    ${group.weeklyQuota ? renderDualWindowBar(groupSlug, group.label, 'weekly', group.weeklyQuota, scopePrefix, directionMode, primaryProj.effectiveWindow === '7d') : ''}
                 </div>`
-            : `<div class="quota-bar-wrap${pct === null ? ' is-unknown' : ''}" role="progressbar" aria-label="${esc(`${group.label} ${tBi('quota remaining', '剩余配额')}`)}"
-                    aria-valuemin="0" aria-valuemax="100"${pct === null ? '' : ` aria-valuenow="${pct}"`} aria-valuetext="${esc(percentagePlain)}">
+            : `<div class="quota-bar-wrap${pct === null ? ' is-unknown' : ''}" role="progressbar" aria-label="${esc(`${group.label} ${tBi(primaryProj.windowLabelEn, primaryProj.windowLabelZh)} ${tBi(primaryProj.directionLabelEn, primaryProj.directionLabelZh)}`)}"
+                    aria-valuemin="0" aria-valuemax="100"${pct === null ? '' : ` aria-valuenow="${pct}"`} aria-valuetext="${esc(`${percentagePlain} ${tBi(primaryProj.directionLabelEn, primaryProj.directionLabelZh)}`)}">
                     ${pct === null ? '' : `<div class="quota-bar ${barTone}" style="width:${pct}%;background:${barColor}"></div>`}
                 </div>
                 <div class="model-card-meta"><span class="model-card-reset">${resetLabelHtml}</span></div>`;
         return `
-            <div class="model-card" data-quota-family="${esc(group.key)}">
+            <div class="model-card" data-quota-family="${esc(group.key)}" data-quota-window-mode="${esc(windowMode)}" data-quota-direction="${esc(directionMode)}">
                 <div class="model-card-header">
                     <span class="model-card-name">
                         <span class="model-card-name-text"${groupNameTip}>${esc(group.label)}</span>${tagBadge}
                     </span>
-                    ${hasDualWindow ? '' : `<span class="model-card-pct${pct === null ? ' is-unknown' : ''}">${percentageHtml}</span>`}
+                    ${dualHeaderSummary}
                 </div>
                 ${members}
                 ${metersHtml}
@@ -496,11 +578,11 @@ export function buildModelQuotaGrid(
     }).join('');
 
     if (options.embedded) {
-        return `<div class="model-grid">${cards}</div>`;
+        return `<div class="model-grid" data-quota-window-mode="${esc(windowMode)}" data-quota-direction="${esc(directionMode)}">${cards}</div>`;
     }
 
     return `
-        <section class="card model-quota-section">
+        <section class="card model-quota-section" data-quota-window-mode="${esc(windowMode)}" data-quota-direction="${esc(directionMode)}">
             ${options.hideHeading ? '' : `<h2>${ICON.bolt} <span>${tBiHtml('Model Quota', '模型配额')}</span></h2>`}
             <div class="model-grid">${cards}</div>
         </section>`;
@@ -529,121 +611,35 @@ export function buildDefaultModelCard(userInfo: UserStatusInfo | null): string {
 
 function buildLimitsSection(userInfo: UserStatusInfo): string {
     const pl = userInfo.planLimits;
-    if (!pl) { return ''; }
-    const fmtLimit = (v: unknown): string => {
-        if (typeof v !== 'number' || !Number.isFinite(v)) { return '—'; }
-        return v === -1 ? '∞' : formatNumber(v);
-    };
-    const fmtCountUnit = (v: unknown, unitEn: string, unitZh: string): string => {
-        if (typeof v !== 'number' || !Number.isFinite(v)) { return '—'; }
-        if (v === -1) { return '∞'; }
-        return `${esc(formatNumber(v))} ${tBiHtml(unitEn, unitZh)}`;
-    };
-    const flexAmount = typeof pl.monthlyFlexCreditPurchaseAmount === 'number' && Number.isFinite(pl.monthlyFlexCreditPurchaseAmount)
-        ? `${esc(formatNumber(pl.monthlyFlexCreditPurchaseAmount))} ${tBiHtml('per month', '每月')}`
-        : '—';
-    const limitCards: Array<{
-        key: string;
-        labelHtml: string;
-        valueHtml: string;
-        tip: string;
-    }> = [
-        {
-            key: 'max-input',
-            labelHtml: tBiHtml('Max Input Tokens', '最大输入'),
-            valueHtml: esc(fmtLimit(pl.maxNumChatInputTokens)),
-            tip: richTipAttrs(
-                'profile-limit-max-input',
-                'Plan Max Input Tokens',
-                '计划最大输入 Token',
-                'Account-plan ceiling on input tokens per chat request — distinct from each model\'s Effective Budget (Compaction Limit) and Native Ceiling.',
-                '当前订阅计划允许的单次对话输入 Token 上限，与「模型」页中各模型的自动压缩上限和原生窗口上限不同。',
-                '∞ (-1) means no extra plan cap; individual model limits still apply.',
-                '∞（-1）表示计划层不额外限制，仍受所选模型自身上限约束。',
-            ),
-        },
-        {
-            key: 'premium-messages',
-            labelHtml: tBiHtml('Premium Messages', '高级消息数'),
-            valueHtml: esc(fmtLimit(pl.maxNumPremiumChatMessages)),
-            tip: richTipAttrs(
-                'profile-limit-premium-msgs',
-                'Premium Messages Limit',
-                '高级消息数上限',
-                'Plan limit on premium-tier chat messages; ∞ means unlimited message count under your current tier (quota pools still govern rate).',
-                '计划允许的高级模型消息条数上限；∞ 表示不限条数（仍受共享配额池速率限制）。',
-                'Raw backend value -1 renders as ∞.',
-                '后端返回 -1 时显示为 ∞。',
-            ),
-        },
-        {
-            key: 'custom-instructions',
-            labelHtml: tBiHtml('Custom Instructions', '自定义指令'),
-            valueHtml: `${esc(fmtLimit(pl.maxCustomChatInstructionCharacters))} ${tBiHtml('chars', '字符')}`,
-            tip: richTipAttrs(
-                'profile-limit-custom-instructions',
-                'Custom Instructions Length',
-                '自定义指令长度上限',
-                'Maximum total character length allowed in your persistent custom instructions/rules profile.',
-                '个人自定义系统指令 / 规则配置允许保存的最大字符数上限。',
-                'Unit: characters (chars).',
-                '单位：字符数（chars）。',
-            ),
-        },
-        {
-            key: 'pinned-context',
-            labelHtml: tBiHtml('Pinned Context', '固定上下文'),
-            valueHtml: fmtCountUnit(pl.maxNumPinnedContextItems, 'items', '项'),
-            tip: richTipAttrs(
-                'profile-limit-pinned-context',
-                'Pinned Context Items',
-                '固定上下文条目上限',
-                'Maximum number of files, symbols, or snippets you can keep permanently pinned in conversation context.',
-                '可在对话上下文中持久固定（Pin）的文件、代码片段或条目数量上限。',
-                'Unit: item count (∞ = no fixed cap).',
-                '单位：条目数（∞ 表示无固定数量限制）。',
-            ),
-        },
-        {
-            key: 'local-index',
-            labelHtml: tBiHtml('Local Index', '本地索引'),
-            valueHtml: fmtCountUnit(pl.maxLocalIndexSize, 'items', '条'),
-            tip: richTipAttrs(
-                'profile-limit-local-index',
-                'Local Workspace Index Size',
-                '本地代码库索引上限',
-                'Maximum number of indexed local workspace entries/chunks your plan allows for semantic codebase search.',
-                '订阅计划允许用于本地语义代码检索的最大索引条目 / 分块数量上限。',
-                'Unit: indexed items / chunks across your workspace.',
-                '单位：工作区本地索引条目 / 分块数。',
-            ),
-        },
-        {
-            key: 'flex-credits',
-            labelHtml: tBiHtml('Flex Credits', 'Flex 积分'),
-            valueHtml: flexAmount,
-            tip: richTipAttrs(
-                'profile-limit-flex-credits',
-                'Monthly Flex Credits',
-                '每月 Flex 积分额度',
-                'Monthly allowance of optional add-on AI Credits eligible for purchase under your subscription plan.',
-                '当前订阅计划每月允许额外购买的弹性 AI 积分（Flex Credits）额度。',
-                '0 per month means monthly add-on credit purchase is not enabled on this plan.',
-                '显示 0 表示当前计划未包含或未开启每月弹性积分加购额度。',
-            ),
-        },
-    ];
-    const limitCardsHtml = limitCards.map(item => `
-        <div class="profile-metric-card" data-plan-limit="${item.key}"${item.tip}>
-            <span class="profile-metric-label">${item.labelHtml}</span>
-            <span class="profile-metric-value">${item.valueHtml}</span>
-        </div>`).join('');
-
-    return `
-        <section class="profile-tech-section">
-            <h3 class="profile-sub-heading">${ICON.shield} <span>${tBiHtml('Plan Limits', '计划限制')}</span></h3>
-            <div class="profile-metric-grid">${limitCardsHtml}</div>
-        </section>`;
+    const limits = [
+        { key: 'max-input', field: 'maxNumChatInputTokens', en: 'Chat input', zh: '聊天输入', unitEn: 'tokens', unitZh: 'tokens' },
+        { key: 'premium-messages', field: 'maxNumPremiumChatMessages', en: 'Premium messages', zh: '高级消息数' },
+        { key: 'custom-instructions', field: 'maxCustomChatInstructionCharacters', en: 'Custom instructions', zh: '自定义指令', unitEn: 'characters', unitZh: '字符' },
+        { key: 'pinned-context', field: 'maxNumPinnedContextItems', en: 'Pinned context', zh: '固定上下文', unitEn: 'items', unitZh: '项' },
+        { key: 'local-index', field: 'maxLocalIndexSize', en: 'Local index size', zh: '本地索引大小' },
+        { key: 'flex-credits', field: 'monthlyFlexCreditPurchaseAmount', en: 'Monthly Flex credit purchase amount', zh: '每月 Flex 积分购买量' },
+    ] satisfies { key: string; field: keyof UserStatusInfo['planLimits']; en: string; zh: string; unitEn?: string; unitZh?: string }[];
+    const rows = limits.map(({ key, field, en, zh, unitEn, unitZh }) => {
+        const value = pl?.[field];
+        if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < -1) { return ''; }
+        const amount = value === -1
+            ? tBiHtml('No numeric limit (−1)', '未给定数值上限（−1）')
+            : esc(formatNumber(value)) + (unitEn && unitZh ? ` ${tBiHtml(unitEn, unitZh)}` : '');
+        const tip = richTipAttrs(`profile-limit-${key}`, en, zh,
+            `Account configuration field: planInfo.${field}.`, `账号计划字段：planInfo.${field}。`);
+        return `<div class="profile-metric-card" data-plan-limit="${key}"${tip}>
+            <dt class="profile-metric-label">${tBiHtml(en, zh)}</dt>
+            <dd class="profile-metric-value">${amount}</dd>
+        </div>`;
+    }).join('');
+    return `<section class="profile-tech-section">
+        <h3 class="profile-sub-heading">${ICON.shield} <span>${tBiHtml('Account plan parameters', '账号计划参数')}</span></h3>
+        ${rows ? `<p class="spec-description">${tBiHtml(
+            'Configuration reported by the host. For the current context window and remaining model quota, see Overview.',
+            '以下为宿主返回的账号配置。当前会话的上下文窗口和模型剩余配额可在概览查看。',
+        )}</p><dl class="profile-metric-grid">${rows}</dl>`
+            : `<p class="empty-msg">${tBiHtml('The host has not reported plan parameters.', '宿主尚未上报计划参数。')}</p>`}
+    </section>`;
 }
 
 function buildFeatureAndTeamGrid(userInfo: UserStatusInfo): string {
@@ -672,134 +668,27 @@ function buildFeatureAndTeamGrid(userInfo: UserStatusInfo): string {
         return `<span class="feature-tag${f.enabled ? ' enabled' : ''}" role="status" aria-label="${esc(ariaLabel)}" data-flag-state="${f.enabled ? 'enabled' : 'disabled'}"${tip}><span class="feature-tag-state" aria-hidden="true">${f.enabled ? '✓' : '×'}</span><span>${tBiHtml(f.labelEn, f.labelZh)}</span></span>`;
     };
 
-    // Feature flags
     const allFeatures: CapabilityChip[] = [
-        {
-            id: 'web-search',
-            labelEn: 'Web Search',
-            labelZh: '网页搜索',
-            descEn: 'Allows the agent to search the live web for documentation and up-to-date answers.',
-            descZh: '允许智能体联网检索文档与最新资料。',
-            enabled: !!userInfo.cascadeWebSearchEnabled,
-        },
-        {
-            id: 'browser',
-            labelEn: 'Browser',
-            labelZh: '浏览器',
-            descEn: 'Allows the built-in browser subagent to open pages, inspect UI, and verify changes.',
-            descZh: '允许内置浏览器子智能体打开网页、检查页面状态与验证改动。',
-            enabled: !!userInfo.browserEnabled,
-        },
-        {
-            id: 'knowledge-base',
-            labelEn: 'Knowledge Base',
-            labelZh: '知识库',
-            descEn: 'Enables persistent workspace knowledge indexing and retrieval across conversations.',
-            descZh: '启用跨会话的工作区知识库沉淀与语义检索。',
-            enabled: !!userInfo.knowledgeBaseEnabled,
-        },
-        {
-            id: 'commit-msg',
-            labelEn: 'Commit Msg',
-            labelZh: '提交信息',
-            descEn: 'Allows AI-generated Git commit messages from staged diffs.',
-            descZh: '允许根据暂存区改动自动生成 Git 提交信息。',
-            enabled: !!userInfo.canGenerateCommitMessages,
-        },
-        {
-            id: 'auto-run',
-            labelEn: 'Auto Run',
-            labelZh: '自动执行',
-            descEn: 'Account permission allowing the agent to run terminal commands without manual approval when configured.',
-            descZh: '账号级权限：允许在用户配置下自动执行终端命令而无需逐条确认。',
-            enabled: !!userInfo.cascadeCanAutoRunCommands,
-        },
-        {
-            id: 'background',
-            labelEn: 'Background',
-            labelZh: '后台',
-            descEn: 'Allows agent conversations and subagents to continue executing in the background.',
-            descZh: '允许主会话或后台子智能体在后台持续运行任务。',
-            enabled: !!userInfo.canAllowCascadeInBackground,
-        },
-        {
-            id: 'buy-credits',
-            labelEn: 'Buy Credits',
-            labelZh: '购买积分',
-            descEn: 'Indicates whether this account can purchase additional AI Credits.',
-            descZh: '标识当前账号是否支持额外加购 AI 积分。',
-            enabled: !!userInfo.canBuyMoreCredits,
-        },
-        {
-            id: 'fast-autocomplete',
-            labelEn: 'Fast Autocomplete',
-            labelZh: '快速补全',
-            descEn: 'Enables low-latency inline code autocomplete suggestions.',
-            descZh: '启用低延迟的行内代码快速补全能力。',
-            enabled: !!userInfo.hasAutocompleteFastMode,
-        },
-        {
-            id: 'sticky-premium',
-            labelEn: 'Sticky Premium',
-            labelZh: '锁定高级',
-            descEn: 'Keeps your chosen premium model selected across new conversations instead of resetting to a lighter default.',
-            descZh: '在新建对话时保持已选的高级模型，不会自动回退到轻量默认模型。',
-            enabled: !!userInfo.allowStickyPremiumModels,
-        },
-        {
-            id: 'command-models',
-            labelEn: 'Command Models',
-            labelZh: '命令模型',
-            descEn: 'Allows inline command / quick-edit prompts to use premium-tier models.',
-            descZh: '允许在行内命令与快捷编辑中使用高级模型。',
-            enabled: !!userInfo.allowPremiumCommandModels,
-        },
-        {
-            id: 'tab-jump',
-            labelEn: 'Tab Jump',
-            labelZh: 'Tab 跳转',
-            descEn: 'Predicts your next edit cursor location so pressing Tab jumps directly there.',
-            descZh: '预测下一处代码编辑位置，按 Tab 键即可直接跳转。',
-            enabled: !!userInfo.hasTabToJump,
-        },
-        {
-            id: 'custom-icon',
-            labelEn: 'Custom Icon',
-            labelZh: '自定义图标',
-            descEn: 'Allows customizing the Antigravity application icon variant.',
-            descZh: '允许自定义 Antigravity 应用图标样式。',
-            enabled: !!userInfo.canCustomizeAppIcon,
-        },
+        { id: 'web-search', labelEn: 'Web Search', labelZh: '网页搜索', descEn: 'Live web search for docs.', descZh: '允许智能体联网检索。', enabled: !!userInfo.cascadeWebSearchEnabled },
+        { id: 'browser', labelEn: 'Browser', labelZh: '浏览器', descEn: 'Built-in browser subagent.', descZh: '允许内置浏览器子智能体。', enabled: !!userInfo.browserEnabled },
+        { id: 'knowledge-base', labelEn: 'Knowledge Base', labelZh: '知识库', descEn: 'Cross-session workspace knowledge indexing.', descZh: '跨会话工作区知识库索引。', enabled: !!userInfo.knowledgeBaseEnabled },
+        { id: 'commit-msg', labelEn: 'Commit Msg', labelZh: '提交信息', descEn: 'AI-generated Git commit messages.', descZh: '自动生成 Git 提交信息。', enabled: !!userInfo.canGenerateCommitMessages },
+        { id: 'auto-run', labelEn: 'Auto Run', labelZh: '自动执行', descEn: 'Permits auto-running terminal commands.', descZh: '允许自动执行终端命令。', enabled: !!userInfo.cascadeCanAutoRunCommands },
+        { id: 'background', labelEn: 'Background', labelZh: '后台', descEn: 'Allows background agent execution.', descZh: '允许后台运行任务。', enabled: !!userInfo.canAllowCascadeInBackground },
+        { id: 'buy-credits', labelEn: 'Buy Credits', labelZh: '购买积分', descEn: 'Can purchase extra AI Credits.', descZh: '支持额外加购 AI 积分。', enabled: !!userInfo.canBuyMoreCredits },
+        { id: 'fast-autocomplete', labelEn: 'Fast Autocomplete', labelZh: '快速补全', descEn: 'Low-latency inline autocomplete.', descZh: '低延迟行内代码补全。', enabled: !!userInfo.hasAutocompleteFastMode },
+        { id: 'sticky-premium', labelEn: 'Sticky Premium', labelZh: '锁定高级', descEn: 'Keeps premium model across new chats.', descZh: '新建对话保持高级模型。', enabled: !!userInfo.allowStickyPremiumModels },
+        { id: 'command-models', labelEn: 'Command Models', labelZh: '命令模型', descEn: 'Premium models for inline quick-edit.', descZh: '行内快捷编辑使用高级模型。', enabled: !!userInfo.allowPremiumCommandModels },
+        { id: 'tab-jump', labelEn: 'Tab Jump', labelZh: 'Tab 跳转', descEn: 'Predicts next edit location on Tab.', descZh: '按 Tab 跳转下一编辑处。', enabled: !!userInfo.hasTabToJump },
+        { id: 'custom-icon', labelEn: 'Custom Icon', labelZh: '自定义图标', descEn: 'Custom Antigravity app icon.', descZh: '允许自定义应用图标。', enabled: !!userInfo.canCustomizeAppIcon },
     ];
     const featureTags = allFeatures.map(f => renderChip('profile-flag', f)).join('');
 
-    // Team config
     const tc = userInfo.teamConfig;
     const teamFeatures: CapabilityChip[] = [
-        {
-            id: 'mcp-servers',
-            labelEn: 'MCP Servers',
-            labelZh: 'MCP 服务',
-            descEn: 'Organization policy permitting Model Context Protocol (MCP) external tool servers.',
-            descZh: '团队策略：是否允许接入外部 MCP（Model Context Protocol）工具服务。',
-            enabled: !!tc?.allowMcpServers,
-        },
-        {
-            id: 'auto-run-cmd',
-            labelEn: 'Auto Run Cmd',
-            labelZh: '自动执行命令',
-            descEn: 'Organization policy permitting agents to auto-execute shell commands.',
-            descZh: '团队策略：是否允许智能体自动执行终端命令。',
-            enabled: !!tc?.allowAutoRunCommands,
-        },
-        {
-            id: 'browser-experimental',
-            labelEn: 'Browser Experimental',
-            labelZh: '浏览器实验',
-            descEn: 'Organization policy permitting experimental browser automation features.',
-            descZh: '团队策略：是否允许启用实验性浏览器自动化功能。',
-            enabled: !!tc?.allowBrowserExperimentalFeatures,
-        },
+        { id: 'mcp-servers', labelEn: 'MCP Servers', labelZh: 'MCP 服务', descEn: 'Org policy for external MCP tool servers.', descZh: '团队策略：允许外部 MCP 工具服务。', enabled: !!tc?.allowMcpServers },
+        { id: 'auto-run-cmd', labelEn: 'Auto Run Cmd', labelZh: '自动执行命令', descEn: 'Org policy for auto shell commands.', descZh: '团队策略：允许自动执行命令。', enabled: !!tc?.allowAutoRunCommands },
+        { id: 'browser-experimental', labelEn: 'Browser Experimental', labelZh: '浏览器实验', descEn: 'Org policy for experimental browser features.', descZh: '团队策略：允许实验性浏览器功能。', enabled: !!tc?.allowBrowserExperimentalFeatures },
     ];
     const teamTags = teamFeatures.map(f => renderChip('profile-team', f)).join('');
 

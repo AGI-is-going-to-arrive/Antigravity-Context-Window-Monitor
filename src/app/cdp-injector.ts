@@ -11,23 +11,46 @@
  *   strict `Origin` validation).
  */
 
-import { execFileSync } from 'child_process';
 import * as crypto from 'crypto';
-import * as fs from 'fs';
 import * as http from 'http';
 import type * as net from 'net';
-import * as os from 'os';
-import * as path from 'path';
+import {
+    discoverDevToolsActivePort,
+    isAuthorizedCdpBrowserSession,
+    isCdpWebSocketAtPort,
+    inspectAntigravityHostProcessAsync,
+    resolveDevToolsActivePortPaths,
+    type DevToolsActivePortInfo,
+    type HostProcessInspectionResult,
+} from './cdp-discovery';
+export {
+    isAuthorizedCdpBrowserSession,
+    discoverDevToolsActivePort,
+    inspectAntigravityHostProcess,
+    inspectAntigravityHostProcessAsync,
+    parseAntigravityHostCommandLine,
+    parseDevToolsActivePortContent,
+    resolveDevToolsActivePortPaths,
+    type DevToolsActivePortInfo,
+    type DevToolsPortDiscoveryOptions,
+    type HostProcessInspectionResult,
+    type InspectHostProcessOptions,
+    type InspectHostProcessAsyncOptions,
+    type ProcessTableEntry,
+} from './cdp-discovery';
 import { getSafeCdpLaunchCommand, inspectCdpLauncher } from './cdp-launcher';
 import {
+    CDP_OVERLAY_BUILD_ID,
     buildOverlayBootstrapScript,
     buildOverlayUnmountScript,
+    safeJsonForScript,
     buildOverlayUpdateScript,
 } from './cdp-overlay-assets';
 import type {
     CdpConnectionState,
     CdpDiagnosticCode,
     CdpLauncherStatus,
+    CdpFocusAck,
     CdpOverlayBridgeAction,
     CdpOverlayBridgeActionCommand,
     CdpOverlayPayload,
@@ -43,6 +66,8 @@ const MAX_TARGETS_BODY_BYTES = 2 * 1024 * 1024;
 const MAX_BRIDGE_BODY_BYTES = 16 * 1024;
 const DEFAULT_CDP_TIMEOUT_MS = 5_000;
 const DEFAULT_RECONNECT_BACKOFF_MS = 15_000;
+const DEFAULT_FAST_RECOVER_BACKOFF_MS = 2_500;
+const WINDOWS_HOST_PROBE_TTL_MS = 30_000;
 
 const LOOPBACK_HOSTNAMES = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
 const ALLOWED_BRIDGE_COMMANDS = new Set<CdpOverlayBridgeActionCommand>([
@@ -51,362 +76,58 @@ const ALLOWED_BRIDGE_COMMANDS = new Set<CdpOverlayBridgeActionCommand>([
     'togglePause',
     'focusConversation',
 ]);
-const OVERLAY_CONVERSATION_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const ALLOWED_OVERLAY_TARGET_TABS = new Set<CdpOverlayTargetTab>([
+/** Aligned with `SAFE_CASCADE_ID_RE` in `sidecar-runtime.ts` (accepts UUIDs and safe cascade IDs; rejects HTML/control chars). */
+const OVERLAY_CONVERSATION_ID_RE = /^[a-zA-Z0-9_-]{4,128}$/;
+
+/**
+ * Full 5-tab + legacy alias CDP `openPanel` target tab allowlist (D2, §5.1).
+ * Covers all 5 primary tabs, topbar Settings/About entries, and every historical tab ID/alias.
+ */
+export type CdpOverlayTargetTabAlias =
+    | CdpOverlayTargetTab
+    | 'gmdata'
+    | 'gm-data'
+    | 'activity'
+    | 'chats'
+    | 'chat-history'
+    | 'usage'
+    | 'pricing'
+    | 'profile'
+    | 'account'
+    | 'about';
+
+export const ALLOWED_OVERLAY_TARGET_TABS: ReadonlySet<CdpOverlayTargetTabAlias> = new Set<CdpOverlayTargetTabAlias>([
     'overview',
     'gm',
+    'gmdata',
+    'gm-data',
+    'activity',
     'sessions',
+    'chats',
+    'chat-history',
+    'usage',
     'cost',
-    'models',
+    'pricing',
     'calendar',
+    'models',
+    'profile',
+    'account',
     'accounts',
     'settings',
+    'about',
 ]);
 
-function parseOverlayTargetTab(raw: unknown): CdpOverlayTargetTab | undefined {
+export function parseOverlayTargetTab(raw: unknown): CdpOverlayTargetTabAlias | undefined {
     if (typeof raw !== 'string') { return undefined; }
-    const trimmed = raw.trim() as CdpOverlayTargetTab;
-    return ALLOWED_OVERLAY_TARGET_TABS.has(trimmed) ? trimmed : undefined;
+    const normalized = raw.trim().toLowerCase() as CdpOverlayTargetTabAlias;
+    return ALLOWED_OVERLAY_TARGET_TABS.has(normalized) ? normalized : undefined;
 }
 
-function parseOverlayConversationId(raw: unknown): string | null | undefined {
+export function parseOverlayConversationId(raw: unknown): string | null | undefined {
     if (raw === null) { return null; }
     if (typeof raw !== 'string') { return undefined; }
     const trimmed = raw.trim();
-    return OVERLAY_CONVERSATION_UUID_RE.test(trimmed) ? trimmed : undefined;
-}
-
-// ─── Cross-Platform DevToolsActivePort Discovery ─────────────────────────────
-
-export interface DevToolsPortDiscoveryOptions {
-    platform?: NodeJS.Platform;
-    homedir?: string;
-    env?: NodeJS.ProcessEnv;
-    explicitPaths?: readonly string[];
-    customUserDataDir?: string;
-    readFileSyncFn?: (filePath: string, encoding: 'utf8') => string;
-}
-
-export interface DevToolsActivePortInfo {
-    port: number;
-    wsPath: string;
-    filePath: string;
-}
-
-/**
- * Resolve cross-platform candidate paths for Antigravity's `DevToolsActivePort` file.
- * Prepends `<customUserDataDir>/DevToolsActivePort` when a custom `--user-data-dir` is detected,
- * checks `AGY_BROWSER_ACTIVE_PORT_FILE` next (if set), followed by default OS paths:
- * - macOS: `~/Library/Application Support/Antigravity/DevToolsActivePort`
- * - Windows: `%APPDATA%\Antigravity\DevToolsActivePort`
- * - Linux: `${XDG_CONFIG_HOME:-~/.config}/Antigravity/DevToolsActivePort`
- */
-export function resolveDevToolsActivePortPaths(options: DevToolsPortDiscoveryOptions = {}): string[] {
-    if (options.explicitPaths && options.explicitPaths.length > 0) {
-        return [...options.explicitPaths];
-    }
-    const platform = options.platform ?? process.platform;
-    const home = options.homedir ?? os.homedir();
-    const env = options.env ?? process.env;
-    const paths: string[] = [];
-    const pushUnique = (candidate: string) => {
-        const trimmed = candidate.trim();
-        if (trimmed && !paths.includes(trimmed)) {
-            paths.push(trimmed);
-        }
-    };
-
-    if (typeof options.customUserDataDir === 'string' && options.customUserDataDir.trim()) {
-        const customDir = options.customUserDataDir.trim();
-        if (platform === 'win32' && (/^[A-Za-z]:/.test(customDir) || customDir.includes('\\'))) {
-            pushUnique(path.win32.join(customDir, 'DevToolsActivePort'));
-        } else {
-            pushUnique(path.posix.join(customDir, 'DevToolsActivePort'));
-        }
-    }
-
-    if (typeof env.AGY_BROWSER_ACTIVE_PORT_FILE === 'string' && env.AGY_BROWSER_ACTIVE_PORT_FILE.trim()) {
-        pushUnique(env.AGY_BROWSER_ACTIVE_PORT_FILE);
-    }
-
-    if (platform === 'darwin') {
-        pushUnique(path.posix.join(home, 'Library', 'Application Support', 'Antigravity', 'DevToolsActivePort'));
-    } else if (platform === 'win32') {
-        const appData = typeof env.APPDATA === 'string' && env.APPDATA.trim()
-            ? env.APPDATA.trim()
-            : '';
-        if (appData) {
-            pushUnique(path.win32.join(appData, 'Antigravity', 'DevToolsActivePort'));
-        }
-        pushUnique(path.win32.join(home, 'AppData', 'Roaming', 'Antigravity', 'DevToolsActivePort'));
-    } else {
-        const xdgConfig = typeof env.XDG_CONFIG_HOME === 'string' && env.XDG_CONFIG_HOME.trim()
-            ? env.XDG_CONFIG_HOME.trim()
-            : path.posix.join(home, '.config');
-        pushUnique(path.posix.join(xdgConfig, 'Antigravity', 'DevToolsActivePort'));
-    }
-    return paths;
-}
-
-/**
- * Parse the 2-line Chromium `DevToolsActivePort` file (`<port>\n<wsPath>`).
- */
-export function parseDevToolsActivePortContent(raw: string): { port: number; wsPath: string } | null {
-    if (typeof raw !== 'string') { return null; }
-    const cleaned = raw.replace(/^\uFEFF/, '');
-    const lines = cleaned.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-    if (lines.length < 2) { return null; }
-    if (!/^\d+$/.test(lines[0])) { return null; }
-    const port = Number(lines[0]);
-    if (!Number.isSafeInteger(port) || port < 1 || port > 65535) { return null; }
-    const wsPath = lines[1];
-    if (!wsPath.startsWith('/') || /\s/.test(wsPath)) { return null; }
-    return { port, wsPath };
-}
-
-/**
- * Read and parse Antigravity's `DevToolsActivePort` file if present.
- * Returns `null` silently when absent or unreadable (normal on Antigravity 2.33+
- * unless the user opted in via `--remote-debugging-port=0`).
- */
-export function discoverDevToolsActivePort(
-    options: DevToolsPortDiscoveryOptions = {},
-): DevToolsActivePortInfo | null {
-    const readFn = options.readFileSyncFn ?? ((p: string, enc: 'utf8') => fs.readFileSync(p, enc));
-    for (const filePath of resolveDevToolsActivePortPaths(options)) {
-        try {
-            const raw = readFn(filePath, 'utf8');
-            const parsed = parseDevToolsActivePortContent(raw);
-            if (parsed) {
-                return { ...parsed, filePath };
-            }
-        } catch {
-            // Missing or unreadable DevToolsActivePort is expected when CDP is disabled.
-        }
-    }
-    return null;
-}
-
-// ─── Read-Only Grandparent Antigravity Host Process Inspection ───────────────
-
-export interface HostProcessInspectionResult {
-    found: boolean;
-    pid?: number;
-    commandLine?: string;
-    hasRemoteDebuggingFlag: boolean;
-    /** Explicit port N when `--remote-debugging-port=N` with N > 0 (`undefined` when `=0` or absent). */
-    explicitPort?: number;
-    /** Custom `--user-data-dir=<dir>` if passed to the host Antigravity process. */
-    customUserDataDir?: string;
-}
-
-export interface ProcessTableEntry {
-    pid: number;
-    ppid: number;
-    command: string;
-}
-
-export interface InspectHostProcessOptions {
-    platform?: NodeJS.Platform;
-    startPid?: number;
-    timeoutMs?: number;
-    maxHops?: number;
-    readProcessEntry?: (pid: number) => ProcessTableEntry | null;
-}
-
-function extractExecutableToken(commandLine: string): string {
-    const trimmed = commandLine.trim();
-    if (!trimmed) { return ''; }
-    if (trimmed.startsWith('"')) {
-        const end = trimmed.indexOf('"', 1);
-        return end > 1 ? trimmed.slice(1, end) : trimmed.slice(1);
-    }
-    if (trimmed.startsWith('\'')) {
-        const end = trimmed.indexOf('\'', 1);
-        return end > 1 ? trimmed.slice(1, end) : trimmed.slice(1);
-    }
-    const flagIdx = trimmed.search(/\s+--/);
-    const prefix = flagIdx >= 0 ? trimmed.slice(0, flagIdx) : trimmed;
-    const firstSpace = prefix.search(/\s/);
-    if (firstSpace < 0) { return prefix; }
-    // Handle macOS/Windows unquoted app paths containing spaces (e.g. "/My Apps/Antigravity.app/Contents/MacOS/Antigravity ...")
-    // while strictly rejecting shell wrappers like "zsh -c '/Applications/Antigravity.app/...'"
-    const macMatch = prefix.match(/^(\/[^"']+\.app\/Contents\/MacOS\/[^\s"']+)(?=\s|$)/i);
-    if (macMatch && !/\s-\S/.test(macMatch[1])) { return macMatch[1]; }
-    const exeMatch = prefix.match(/^([A-Za-z]:\\[^"']+\.exe)(?=\s|$)/i);
-    if (exeMatch && !/\s-\S/.test(exeMatch[1])) { return exeMatch[1]; }
-    return prefix.slice(0, firstSpace);
-}
-
-/**
- * Pure parser for an Antigravity App main process command line.
- * Identifies the Antigravity Desktop main process (strictly excluding Antigravity IDE,
- * Electron helper/renderer processes, `language_server`, and sidecar processes) and extracts
- * `--remote-debugging-port` and `--user-data-dir`.
- */
-export function parseAntigravityHostCommandLine(commandLine: string): {
-    isAntigravityHost: boolean;
-    hasRemoteDebuggingFlag: boolean;
-    explicitPort?: number;
-    customUserDataDir?: string;
-} {
-    const raw = typeof commandLine === 'string' ? commandLine.trim() : '';
-    if (!raw) {
-        return { isAntigravityHost: false, hasRemoteDebuggingFlag: false };
-    }
-
-    // Strictly exclude Antigravity IDE, Antigravity Tools, Electron helper/child processes,
-    // language_server, and our own sidecar/launcher scripts.
-    if (
-        /\bantigravity[\s-]+ide\b/i.test(raw)
-        || /\bantigravity[\s-]+tools\b/i.test(raw)
-        || /\bantigravity\s+helper\b/i.test(raw)
-        || /\blanguage_server\b/i.test(raw)
-        || /\bantigravity-context-monitor\b/i.test(raw)
-        || /\bantigravity-cdp\b/i.test(raw)
-        || /(?:^|\s)--type=/i.test(raw)
-    ) {
-        return { isAntigravityHost: false, hasRemoteDebuggingFlag: false };
-    }
-
-    const exe = extractExecutableToken(raw);
-    const isMacMain = /\/Antigravity\.app\/Contents\/MacOS\/Antigravity$/i.test(exe);
-    const isWinMain = /(?:^|[\\/])Antigravity\.exe$/i.test(exe);
-    const isLinuxMain = /(?:^|\/)antigravity$/.test(exe);
-
-    if (!isMacMain && !isWinMain && !isLinuxMain) {
-        return { isAntigravityHost: false, hasRemoteDebuggingFlag: false };
-    }
-
-    let hasRemoteDebuggingFlag = false;
-    let explicitPort: number | undefined;
-    const portMatch = raw.match(/(?:^|\s)--remote-debugging-port(?:=|\s+)["']?(\d+)["']?(?=\s|$)/);
-    if (portMatch) {
-        hasRemoteDebuggingFlag = true;
-        const parsedPort = Number(portMatch[1]);
-        if (Number.isSafeInteger(parsedPort) && parsedPort >= 1 && parsedPort <= 65535) {
-            explicitPort = parsedPort;
-        }
-    } else if (/(?:^|\s)--remote-debugging-port(?==|\s|$)/.test(raw)) {
-        hasRemoteDebuggingFlag = true;
-    }
-
-    const quotedDirMatch = raw.match(/(?:^|\s)--user-data-dir(?:=|\s+)(?:"([^"]+)"|'([^']+)')(?=\s|$)/);
-    const unquotedDirMatch = quotedDirMatch
-        ? null
-        : raw.match(/(?:^|\s)--user-data-dir(?:=|\s+)([^\s"'](?:.*?))(?=\s+--|$)/);
-    const customUserDataDir = (quotedDirMatch?.[1] ?? quotedDirMatch?.[2] ?? unquotedDirMatch?.[1] ?? '').trim() || undefined;
-
-    return {
-        isAntigravityHost: true,
-        hasRemoteDebuggingFlag,
-        ...(explicitPort !== undefined ? { explicitPort } : {}),
-        ...(customUserDataDir ? { customUserDataDir } : {}),
-    };
-}
-
-function readLinuxProcEntry(pid: number): ProcessTableEntry | null {
-    try {
-        const statRaw = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
-        const closeParen = statRaw.lastIndexOf(')');
-        if (closeParen < 0) { return null; }
-        const after = statRaw.slice(closeParen + 1).trim().split(/\s+/);
-        // after[0] is process state, after[1] is ppid
-        const ppid = Number(after[1]);
-        if (!Number.isSafeInteger(ppid) || ppid < 0) { return null; }
-        const cmdlineBuf = fs.readFileSync(`/proc/${pid}/cmdline`);
-        const args = cmdlineBuf
-            .toString('utf8')
-            .split('\0')
-            .filter(Boolean)
-            .map((arg) => (/\s/.test(arg) ? `"${arg.replace(/"/g, '\\"')}"` : arg));
-        if (args.length === 0) { return null; }
-        return { pid, ppid, command: args.join(' ') };
-    } catch {
-        return null;
-    }
-}
-
-function readPosixPsEntry(pid: number, timeoutMs: number): ProcessTableEntry | null {
-    try {
-        const out = execFileSync('ps', ['-o', 'ppid=,command=', '-p', String(pid)], {
-            encoding: 'utf8',
-            timeout: timeoutMs,
-            stdio: ['ignore', 'pipe', 'ignore'],
-        });
-        const line = out.trim();
-        if (!line) { return null; }
-        const match = line.match(/^(\d+)\s+(.+)$/);
-        if (!match) { return null; }
-        const ppid = Number(match[1]);
-        if (!Number.isSafeInteger(ppid) || ppid < 0) { return null; }
-        return { pid, ppid, command: match[2].trim() };
-    } catch {
-        return null;
-    }
-}
-
-/**
- * Read-only walk up `process.ppid` -> grandparent PID to locate the host Antigravity App
- * main process and inspect its `--remote-debugging-port` and `--user-data-dir` argv flags.
- * Fast (~100ms timeout cap) and completely fail-safe (returns `{ found: false }` on any error).
- */
-export function inspectAntigravityHostProcess(
-    options: InspectHostProcessOptions = {},
-): HostProcessInspectionResult {
-    const platform = options.platform ?? process.platform;
-    const timeoutMs = options.timeoutMs ?? 120;
-    const maxHops = options.maxHops ?? 6;
-    const startPid = options.startPid ?? process.ppid;
-
-    if (!Number.isSafeInteger(startPid) || startPid <= 1) {
-        return { found: false, hasRemoteDebuggingFlag: false };
-    }
-
-    const readEntry = options.readProcessEntry ?? ((pid: number): ProcessTableEntry | null => {
-        if (platform === 'linux') {
-            return readLinuxProcEntry(pid) ?? readPosixPsEntry(pid, timeoutMs);
-        }
-        if (platform === 'darwin') {
-            return readPosixPsEntry(pid, timeoutMs);
-        }
-        // On Windows, spawning PowerShell/CIM synchronously risks blocking the sidecar event loop
-        // beyond the ~100ms budget; skip cleanly unless an explicit reader is injected.
-        return null;
-    });
-
-    const visited = new Set<number>();
-    let currentPid = startPid;
-
-    for (let hop = 0; hop < maxHops && currentPid > 1 && !visited.has(currentPid); hop++) {
-        visited.add(currentPid);
-        let entry: ProcessTableEntry | null = null;
-        try {
-            entry = readEntry(currentPid);
-        } catch {
-            entry = null;
-        }
-        if (!entry) { break; }
-
-        const parsed = parseAntigravityHostCommandLine(entry.command);
-        if (parsed.isAntigravityHost) {
-            return {
-                found: true,
-                pid: entry.pid,
-                commandLine: entry.command,
-                hasRemoteDebuggingFlag: parsed.hasRemoteDebuggingFlag,
-                ...(parsed.explicitPort !== undefined ? { explicitPort: parsed.explicitPort } : {}),
-                ...(parsed.customUserDataDir ? { customUserDataDir: parsed.customUserDataDir } : {}),
-            };
-        }
-
-        if (!Number.isSafeInteger(entry.ppid) || entry.ppid <= 1 || entry.ppid === currentPid) {
-            break;
-        }
-        currentPid = entry.ppid;
-    }
-
-    return { found: false, hasRemoteDebuggingFlag: false };
+    return OVERLAY_CONVERSATION_ID_RE.test(trimmed) ? trimmed : undefined;
 }
 
 /**
@@ -498,21 +219,32 @@ function isExcludedSidecarOrDevToolsTitle(titleLower: string, isHttps = false): 
         || /\bswarm\b/i.test(titleLower);
 }
 
+export interface CdpBrowserVersionInfo {
+    Browser?: string;
+    'User-Agent'?: string;
+    webSocketDebuggerUrl?: string;
+}
+
 /**
- * Select ONLY the Antigravity Hub target page from CDP `/json/list` targets.
- * Guarantees unrelated websites, DevTools pages, extensions, and sidecar views/iframes are NEVER touched.
+ * Select ALL positively identified Antigravity Hub target pages from CDP `/json/list` targets,
+ * ordered highest-confidence first.
+ *
+ * Security guarantee:
+ * - Requires POSITIVE Antigravity / Jetski Hub identification — NEVER score-selects an
+ *   unidentified loopback page (e.g. a local dev server, notebook, or unrelated Electron page).
+ * - Excludes unrelated websites, DevTools pages, extensions, `plugin://` targets, and sidecar views.
  */
-export function selectAntigravityHubTarget(
+export function selectAntigravityHubTargets(
     targets: readonly CdpTargetInfo[],
     options: { excludePorts?: readonly number[]; env?: NodeJS.ProcessEnv } = {},
-): CdpTargetInfo | null {
+): CdpTargetInfo[] {
     const excluded = new Set(options.excludePorts ?? []);
     for (const ownPort of parseSidecarWebPort(options.env ?? process.env)) {
         excluded.add(ownPort);
     }
 
-    let bestTarget: CdpTargetInfo | null = null;
-    let bestScore = -1;
+    const scored: Array<{ target: CdpTargetInfo; score: number }> = [];
+    const seenKeys = new Set<string>();
 
     for (const target of targets) {
         if (!target || target.type !== 'page') { continue; }
@@ -543,21 +275,27 @@ export function selectAntigravityHubTarget(
             continue;
         }
 
-        let score = 10;
         const isRootPath = pathname === '/' || pathname === '/index.html' || pathname.startsWith('/hub');
-        const hasAgyTitle = titleLower.includes('antigravity');
+        const hasAgyTitle = titleLower === 'antigravity'
+            || titleLower.endsWith(' - antigravity')
+            || titleLower.includes('antigravity hub')
+            || (isHttps && titleLower.includes('antigravity'));
         const isJetskiTitle = titleLower.includes('jetski web') || titleLower === 'jetski';
 
+        // Positive Hub identification required: NEVER fall back to an unidentified loopback page!
+        if (!hasAgyTitle && !isJetskiTitle) {
+            continue;
+        }
+
+        let score: number;
         if (hasAgyTitle && isRootPath) {
             score = 100;
         } else if (isJetskiTitle && isRootPath) {
             score = 95;
         } else if (hasAgyTitle) {
             score = 75;
-        } else if (isJetskiTitle) {
+        } else {
             score = 70;
-        } else if (isRootPath) {
-            score = 40;
         }
 
         // Antigravity 2.33+ Desktop Hub serves over https://127.0.0.1:<port>/,
@@ -566,13 +304,105 @@ export function selectAntigravityHubTarget(
             score += 40;
         }
 
-        if (score > bestScore) {
-            bestScore = score;
-            bestTarget = target;
-        }
+        const dedupKey = (target.id && target.id.trim()) || target.webSocketDebuggerUrl;
+        if (seenKeys.has(dedupKey)) { continue; }
+        seenKeys.add(dedupKey);
+        scored.push({ target, score });
     }
 
-    return bestTarget;
+    scored.sort((a, b) => b.score - a.score);
+    return scored.map(entry => entry.target);
+}
+
+/**
+ * Select the highest-confidence positively identified Antigravity Hub target page from CDP `/json/list` targets.
+ * Guarantees unrelated websites, unidentified loopback pages, DevTools pages, extensions, and sidecar views are NEVER touched.
+ */
+export function selectAntigravityHubTarget(
+    targets: readonly CdpTargetInfo[],
+    options: { excludePorts?: readonly number[]; env?: NodeJS.ProcessEnv } = {},
+): CdpTargetInfo | null {
+    return selectAntigravityHubTargets(targets, options)[0] ?? null;
+}
+
+function fetchCdpJsonFromHost<T>(hostname: string, port: number, reqPath: string, timeoutMs: number): Promise<T> {
+    return new Promise((resolve, reject) => {
+        if (!Number.isSafeInteger(port) || port < 1 || port > 65535) {
+            reject(new Error(`Invalid CDP port: ${port}`));
+            return;
+        }
+        let settled = false;
+        const finish = (err: Error | null, data?: T) => {
+            if (settled) { return; }
+            settled = true;
+            if (err) { reject(err); } else { resolve(data as T); }
+        };
+        const req = http.request({
+            hostname,
+            port,
+            path: reqPath,
+            method: 'GET',
+            timeout: timeoutMs,
+        }, (res) => {
+            if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
+                res.resume();
+                finish(new Error(`CDP ${reqPath} returned HTTP ${res.statusCode ?? 'unknown'}`));
+                return;
+            }
+            const chunks: Buffer[] = [];
+            let total = 0;
+            res.on('data', (chunk: Buffer | string) => {
+                const buf = typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : chunk;
+                total += buf.length;
+                if (total > MAX_TARGETS_BODY_BYTES) {
+                    req.destroy();
+                    finish(new Error(`CDP ${reqPath} response exceeded size cap`));
+                    return;
+                }
+                chunks.push(buf);
+            });
+            res.on('error', (err) => finish(err));
+            res.on('end', () => {
+                try {
+                    finish(null, JSON.parse(Buffer.concat(chunks).toString('utf8')) as T);
+                } catch {
+                    finish(new Error(`Failed to parse CDP ${reqPath} JSON`));
+                }
+            });
+        });
+        req.on('error', (err) => finish(err));
+        req.on('timeout', () => {
+            req.destroy();
+            finish(new Error(`CDP ${reqPath} timed out`));
+        });
+        req.end();
+    });
+}
+
+/**
+ * Fetch CDP `/json/version` metadata from loopback to positively verify browser-session ownership.
+ */
+export async function fetchCdpBrowserVersion(
+    port: number,
+    timeoutMs = 2_000,
+    options: { hosts?: readonly string[] } = {},
+): Promise<CdpBrowserVersionInfo | null> {
+    const hosts = options.hosts && options.hosts.length > 0 ? options.hosts : ['127.0.0.1', '::1'];
+    for (let i = 0; i < hosts.length; i++) {
+        try {
+            const parsed = await fetchCdpJsonFromHost<unknown>(hosts[i], port, '/json/version', timeoutMs);
+            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                return parsed as CdpBrowserVersionInfo;
+            }
+            return null;
+        } catch (err) {
+            if (i + 1 < hosts.length && isConnectionRefusedError(err)) {
+                continue;
+            }
+            return null;
+        }
+    }
+    return null;
 }
 
 function fetchCdpTargetsFromHost(hostname: string, port: number, timeoutMs: number): Promise<CdpTargetInfo[]> {
@@ -852,6 +682,8 @@ export interface CdpClientLike {
     readonly isOpen: boolean;
     send<T = unknown>(method: string, params?: Record<string, unknown>, timeoutMs?: number): Promise<T>;
     evaluate<T = unknown>(expression: string, timeoutMs?: number): Promise<T>;
+    onClose?(listener: () => void): () => void;
+    onEvent?(listener: (method: string, params?: Record<string, unknown>) => void): () => void;
     close(): Promise<void>;
 }
 
@@ -869,6 +701,8 @@ export class CdpWebSocketClient implements CdpClientLike {
     private readonly _socket: net.Socket;
     private readonly _decoder = new WebSocketFrameDecoder();
     private readonly _pending = new Map<number, PendingCdpCall>();
+    private readonly _closeListeners = new Set<() => void>();
+    private readonly _eventListeners = new Set<(method: string, params?: Record<string, unknown>) => void>();
     private _nextId = 1;
     private _closed = false;
 
@@ -884,6 +718,20 @@ export class CdpWebSocketClient implements CdpClientLike {
 
     get isOpen(): boolean {
         return !this._closed && !this._socket.destroyed;
+    }
+
+    onClose(listener: () => void): () => void {
+        if (this._closed) {
+            try { listener(); } catch { /* ignore */ }
+            return () => {};
+        }
+        this._closeListeners.add(listener);
+        return () => { this._closeListeners.delete(listener); };
+    }
+
+    onEvent(listener: (method: string, params?: Record<string, unknown>) => void): () => void {
+        this._eventListeners.add(listener);
+        return () => { this._eventListeners.delete(listener); };
     }
 
     static connect(wsUrl: string, options: { timeoutMs?: number } = {}): Promise<CdpWebSocketClient> {
@@ -1050,13 +898,26 @@ export class CdpWebSocketClient implements CdpClientLike {
     }
 
     private _handleTextMessage(raw: string): void {
-        let parsed: { id?: number; result?: unknown; error?: { code?: number; message?: string } };
+        let parsed: {
+            id?: number;
+            method?: string;
+            params?: Record<string, unknown>;
+            result?: unknown;
+            error?: { code?: number; message?: string };
+        };
         try {
             parsed = JSON.parse(raw);
         } catch {
             return;
         }
-        if (typeof parsed.id !== 'number') { return; }
+        if (typeof parsed.id !== 'number') {
+            if (typeof parsed.method === 'string' && this._eventListeners.size > 0) {
+                for (const listener of [...this._eventListeners]) {
+                    try { listener(parsed.method, parsed.params); } catch { /* ignore */ }
+                }
+            }
+            return;
+        }
         const pending = this._pending.get(parsed.id);
         if (!pending) { return; }
         this._pending.delete(parsed.id);
@@ -1069,11 +930,19 @@ export class CdpWebSocketClient implements CdpClientLike {
     }
 
     private _failAll(err: Error): void {
+        const wasOpen = !this._closed;
         this._closed = true;
         for (const [id, pending] of this._pending.entries()) {
             this._pending.delete(id);
             clearTimeout(pending.timer);
             pending.reject(err);
+        }
+        if (wasOpen && this._closeListeners.size > 0) {
+            const listeners = [...this._closeListeners];
+            this._closeListeners.clear();
+            for (const listener of listeners) {
+                try { listener(); } catch { /* ignore */ }
+            }
         }
     }
 }
@@ -1142,25 +1011,109 @@ export function validateOverlayBridgeRequest(params: {
     return { ok: true, status: 200, origin: normalizedOrigin };
 }
 
+export interface OverlayTargetGrant {
+    targetId: string;
+    token: string;
+    allowedOrigin: string;
+    allowedCommands: ReadonlySet<CdpOverlayBridgeActionCommand>;
+    issuedAt: number;
+    targetUrl: string;
+}
+
 export interface OverlayActionBridgeHandle {
     readonly url: string;
     readonly port: number;
     readonly token: string;
     setAllowedOrigin(origin: string | undefined): void;
+    registerTargetGrant?(grant: OverlayTargetGrant): void;
+    revokeTargetGrant?(targetId: string): void;
+    revokeAllGrants?(): void;
+    validateGrant?(token: string, origin?: string, command?: CdpOverlayBridgeActionCommand): boolean;
     close(): Promise<void>;
+}
+
+function parseLoopbackOriginHeader(rawOrigin: string | undefined): { ok: true; origin: string } | { ok: false; error: string } {
+    const clean = typeof rawOrigin === 'string' ? rawOrigin.trim() : '';
+    if (!clean || clean === 'null') {
+        return { ok: false, error: 'Missing or null Origin header' };
+    }
+    let parsed: URL;
+    try {
+        parsed = new URL(clean);
+    } catch {
+        return { ok: false, error: 'Malformed Origin header' };
+    }
+    if ((parsed.protocol !== 'http:' && parsed.protocol !== 'https:')
+        || !isLoopbackHostname(parsed.hostname)) {
+        return { ok: false, error: 'Non-loopback Origin rejected' };
+    }
+    return { ok: true, origin: parsed.origin };
 }
 
 /**
  * Start a loopback-only (`127.0.0.1`) authenticated HTTP bridge for overlay quick actions
- * (`openPanel`, `refresh`, `togglePause`). Enforces 256-bit `X-Monitor-Token` and strict `Origin`.
+ * (`openPanel`, `refresh`, `togglePause`, `focusConversation`).
+ * Enforces strict loopback `Origin`, per-target 256-bit `X-Monitor-Token` grants,
+ * minimal capability checks, and immediate revocation on navigation/detach/restart.
  */
 export async function createOverlayActionBridge(options: {
-    onAction?: (action: CdpOverlayBridgeAction) => Promise<void> | void;
+    onAction?: (action: CdpOverlayBridgeAction) => Promise<void | CdpFocusAck> | void | CdpFocusAck;
     allowedOrigin?: string;
     token?: string;
 } = {}): Promise<OverlayActionBridgeHandle> {
     const token = options.token && options.token.length >= 32 ? options.token : generateSessionToken();
     let allowedOrigin = options.allowedOrigin;
+    const targetGrants = new Map<string, OverlayTargetGrant>();
+    let grantModeActive = false;
+
+    function findMatchingTargetGrant(
+        providedToken: string,
+        normalizedOrigin: string | undefined,
+        command?: CdpOverlayBridgeActionCommand,
+    ): OverlayTargetGrant | null {
+        if (!providedToken || !normalizedOrigin) { return null; }
+        let matched: OverlayTargetGrant | null = null;
+        for (const grant of targetGrants.values()) {
+            const originMatches = grant.allowedOrigin === normalizedOrigin;
+            const tokenMatches = constantTimeTokenEquals(providedToken, grant.token);
+            const cmdMatches = !command || grant.allowedCommands.has(command);
+            if (originMatches && tokenMatches && cmdMatches && !matched) {
+                matched = grant;
+            }
+        }
+        return matched;
+    }
+
+    function hasActiveGrantForOrigin(normalizedOrigin: string): boolean {
+        for (const grant of targetGrants.values()) {
+            if (grant.allowedOrigin === normalizedOrigin) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    function validateGrant(
+        providedToken: string,
+        originHeader?: string,
+        command?: CdpOverlayBridgeActionCommand,
+    ): boolean {
+        const trimmedToken = typeof providedToken === 'string' ? providedToken.trim() : '';
+        if (!trimmedToken) { return false; }
+        const parsed = parseLoopbackOriginHeader(originHeader);
+        if (!parsed.ok || !parsed.origin) { return false; }
+        const normalizedOrigin = parsed.origin;
+        if (grantModeActive) {
+            return findMatchingTargetGrant(trimmedToken, normalizedOrigin, command) !== null;
+        }
+        if (allowedOrigin && normalizedOrigin !== allowedOrigin) {
+            return false;
+        }
+        if (command && !ALLOWED_BRIDGE_COMMANDS.has(command)) {
+            return false;
+        }
+        return constantTimeTokenEquals(trimmedToken, token);
+    }
 
     const server = http.createServer((req, res) => {
         const method = (req.method || 'GET').toUpperCase();
@@ -1184,12 +1137,39 @@ export async function createOverlayActionBridge(options: {
             res.end(JSON.stringify(body));
         };
 
+        // This bridge advertises its literal IPv4 loopback endpoint. Bind HTTP
+        // authority to the same listener before preflight, authorization or body reads.
+        if (req.headers.host !== `127.0.0.1:${req.socket.localPort}`) {
+            send(403, { ok: false, error: 'Host does not match the overlay bridge' });
+            return;
+        }
+
         if (pathname !== '/api/overlay/action') {
             send(404, { ok: false, error: 'Not Found' });
             return;
         }
 
         if (method === 'OPTIONS') {
+            if (grantModeActive) {
+                const parsed = parseLoopbackOriginHeader(originHeader);
+                if (!parsed.ok) {
+                    send(403, { ok: false, error: parsed.error });
+                    return;
+                }
+                if (!hasActiveGrantForOrigin(parsed.origin)) {
+                    send(403, { ok: false, error: 'Origin does not match any active Antigravity Hub target' });
+                    return;
+                }
+                res.writeHead(204, {
+                    'Access-Control-Allow-Origin': parsed.origin,
+                    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+                    'Access-Control-Allow-Headers': 'Content-Type, X-Monitor-Token',
+                    'Access-Control-Max-Age': '300',
+                    'Vary': 'Origin',
+                });
+                res.end();
+                return;
+            }
             const check = validateOverlayBridgeRequest({
                 originHeader,
                 tokenHeader,
@@ -1217,15 +1197,43 @@ export async function createOverlayActionBridge(options: {
             return;
         }
 
-        const check = validateOverlayBridgeRequest({
-            originHeader,
-            tokenHeader,
-            expectedToken: token,
-            allowedOrigin,
-            isPreflight: false,
-        });
-        if (!check.ok) {
-            send(check.status, { ok: false, error: check.error });
+        let matchedOrigin: string;
+        let matchedGrant: OverlayTargetGrant | null = null;
+        if (grantModeActive) {
+            const parsed = parseLoopbackOriginHeader(originHeader);
+            if (!parsed.ok) {
+                send(403, { ok: false, error: parsed.error });
+                return;
+            }
+            if (!hasActiveGrantForOrigin(parsed.origin)) {
+                send(403, { ok: false, error: 'Origin does not match any active Antigravity Hub target' });
+                return;
+            }
+            const provided = typeof tokenHeader === 'string' ? tokenHeader.trim() : '';
+            matchedGrant = findMatchingTargetGrant(provided, parsed.origin);
+            if (!matchedGrant) {
+                send(401, { ok: false, error: 'Invalid, revoked, or mismatched X-Monitor-Token' });
+                return;
+            }
+            matchedOrigin = parsed.origin;
+        } else {
+            const check = validateOverlayBridgeRequest({
+                originHeader,
+                tokenHeader,
+                expectedToken: token,
+                allowedOrigin,
+                isPreflight: false,
+            });
+            if (!check.ok) {
+                send(check.status, { ok: false, error: check.error });
+                return;
+            }
+            matchedOrigin = check.origin!;
+        }
+
+        const mediaType = req.headers['content-type']?.split(';')[0]?.trim().toLowerCase();
+        if (mediaType !== 'application/json') {
+            send(415, { ok: false, error: 'Content-Type must be application/json' }, matchedOrigin);
             return;
         }
 
@@ -1239,7 +1247,7 @@ export async function createOverlayActionBridge(options: {
             if (total > MAX_BRIDGE_BODY_BYTES) {
                 finished = true;
                 req.resume();
-                send(413, { ok: false, error: 'Payload too large' }, check.origin);
+                send(413, { ok: false, error: 'Payload too large' }, matchedOrigin);
                 return;
             }
             chunks.push(buf);
@@ -1247,27 +1255,31 @@ export async function createOverlayActionBridge(options: {
         req.on('error', () => {
             if (!finished) {
                 finished = true;
-                send(400, { ok: false, error: 'Request stream error' }, check.origin);
+                send(400, { ok: false, error: 'Request stream error' }, matchedOrigin);
             }
         });
         req.on('end', () => {
             if (finished) { return; }
             finished = true;
+            if (grantModeActive && (!matchedGrant || targetGrants.get(matchedGrant.targetId) !== matchedGrant)) {
+                send(401, { ok: false, error: 'Overlay target grant was revoked' }, matchedOrigin);
+                return;
+            }
             let parsed: Record<string, unknown>;
             try {
                 const json = JSON.parse(Buffer.concat(chunks).toString('utf8'));
                 if (!json || typeof json !== 'object' || Array.isArray(json)) {
-                    send(400, { ok: false, error: 'Invalid JSON body' }, check.origin);
+                    send(400, { ok: false, error: 'Invalid JSON body' }, matchedOrigin);
                     return;
                 }
                 parsed = json as Record<string, unknown>;
             } catch {
-                send(400, { ok: false, error: 'Malformed JSON body' }, check.origin);
+                send(400, { ok: false, error: 'Malformed JSON body' }, matchedOrigin);
                 return;
             }
             const cmd = typeof parsed.command === 'string' ? parsed.command.trim() as CdpOverlayBridgeActionCommand : '' as CdpOverlayBridgeActionCommand;
-            if (!ALLOWED_BRIDGE_COMMANDS.has(cmd)) {
-                send(400, { ok: false, error: 'Unsupported overlay action' }, check.origin);
+            if (!ALLOWED_BRIDGE_COMMANDS.has(cmd) || (matchedGrant && !matchedGrant.allowedCommands.has(cmd))) {
+                send(400, { ok: false, error: 'Unsupported overlay action' }, matchedOrigin);
                 return;
             }
             const source = parsed.source === 'composer' || parsed.source === 'topbar' ? parsed.source : undefined;
@@ -1277,24 +1289,33 @@ export async function createOverlayActionBridge(options: {
                 const isNewConversation = typeof parsed.isNewConversation === 'boolean'
                     ? parsed.isNewConversation
                     : false;
-                if (conversationId === undefined && !isNewConversation) {
-                    send(400, { ok: false, error: 'Invalid conversation focus payload' }, check.origin);
+                const revision = parsed.focusRevision;
+                if ((parsed.conversationId !== undefined && conversationId === undefined)
+                    || (conversationId === undefined && !isNewConversation)
+                    || (revision !== undefined && (typeof revision !== 'number' || !Number.isSafeInteger(revision) || revision < 0))) {
+                    send(400, { ok: false, error: 'Invalid conversation focus payload' }, matchedOrigin);
                     return;
                 }
                 const sanitizedId = typeof conversationId === 'string' ? conversationId : null;
-                Promise.resolve(options.onAction?.({
+                Promise.resolve().then(() => options.onAction?.({
                     command: cmd,
                     source,
                     conversationId: sanitizedId,
                     isNewConversation,
+                    ...(matchedGrant ? { targetId: matchedGrant.targetId } : {}),
+                    ...(typeof revision === 'number' ? { focusRevision: revision } : {}),
                 }))
-                    .then(() => send(200, { ok: true, command: cmd }, check.origin))
-                    .catch(() => send(500, { ok: false, error: 'Action handler failed' }, check.origin));
+                    .then(ack => send(200, { ok: true, command: cmd, ...(ack ? { result: { accepted: ack.accepted, ackFocusRevision: ack.ackFocusRevision } } : {}) }, matchedOrigin))
+                    .catch(() => send(500, { ok: false, error: 'Action handler failed' }, matchedOrigin));
                 return;
             }
-            Promise.resolve(options.onAction?.({ command: cmd, source, ...(targetTab ? { targetTab } : {}) }))
-                .then(() => send(200, { ok: true, command: cmd }, check.origin))
-                .catch(() => send(500, { ok: false, error: 'Action handler failed' }, check.origin));
+            Promise.resolve().then(() => options.onAction?.({
+                command: cmd,
+                source,
+                ...(targetTab ? { targetTab: targetTab as CdpOverlayTargetTab } : {}),
+            }))
+                .then(() => send(200, { ok: true, command: cmd }, matchedOrigin))
+                .catch(() => send(500, { ok: false, error: 'Action handler failed' }, matchedOrigin));
         });
     });
 
@@ -1323,7 +1344,20 @@ export async function createOverlayActionBridge(options: {
         setAllowedOrigin(nextOrigin: string | undefined) {
             allowedOrigin = nextOrigin;
         },
+        registerTargetGrant(grant: OverlayTargetGrant) {
+            grantModeActive = true;
+            targetGrants.set(grant.targetId, grant);
+        },
+        revokeTargetGrant(targetId: string) {
+            targetGrants.delete(targetId);
+        },
+        revokeAllGrants() {
+            targetGrants.clear();
+        },
+        validateGrant,
         close(): Promise<void> {
+            grantModeActive = true;
+            targetGrants.clear();
             if (closePromise) { return closePromise; }
             closePromise = new Promise<void>((resolve) => {
                 server.close(() => resolve());
@@ -1341,22 +1375,26 @@ export async function createOverlayActionBridge(options: {
 // ─── High-Level Opt-In Ambient Overlay Manager ───────────────────────────────
 
 export interface CdpAmbientOverlayManagerOptions {
+    payloadForTarget?: (targetId: string, common: CdpOverlayPayload) => CdpOverlayPayload;
     platform?: NodeJS.Platform;
     env?: NodeJS.ProcessEnv;
     reconnectBackoffMs?: number;
+    /** Fast recovery polling interval (2–3s default: 2500ms) when in `no_hub_target` / macOS Dock reopen state. */
+    fastRecoveryBackoffMs?: number;
     enableActionBridge?: boolean;
     excludeTargetPorts?: readonly number[];
-    onBridgeAction?: (action: CdpOverlayBridgeAction) => Promise<void> | void;
+    onBridgeAction?: (action: CdpOverlayBridgeAction) => Promise<void | CdpFocusAck> | void | CdpFocusAck;
     log?: (msg: string) => void;
     now?: () => number;
     // Injectable dependencies for deterministic testing
     discoverActivePort?: (opts?: { customUserDataDir?: string }) => DevToolsActivePortInfo | null;
-    inspectHostProcess?: () => HostProcessInspectionResult;
+    inspectHostProcess?: () => HostProcessInspectionResult | Promise<HostProcessInspectionResult>;
     inspectLauncher?: () => CdpLauncherStatus;
+    fetchVersion?: (port: number) => Promise<CdpBrowserVersionInfo | null>;
     fetchTargets?: (port: number) => Promise<CdpTargetInfo[]>;
     connectClient?: (wsUrl: string) => Promise<CdpClientLike>;
     createBridge?: (opts: {
-        onAction?: (action: CdpOverlayBridgeAction) => Promise<void> | void;
+        onAction?: (action: CdpOverlayBridgeAction) => Promise<void | CdpFocusAck> | void | CdpFocusAck;
         allowedOrigin?: string;
     }) => Promise<OverlayActionBridgeHandle>;
 }
@@ -1367,23 +1405,51 @@ export interface CdpAmbientOverlayManager {
     updatePayload(payload: CdpOverlayPayload): Promise<CdpStatus>;
     recheck?(): Promise<CdpStatus>;
     addExcludedPort?(port: number): void;
+    /** Validate a per-target overlay bridge token + origin + optional minimal capability command. */
+    validateBridgeGrant?(token: string, origin?: string, command?: CdpOverlayBridgeActionCommand): boolean;
+    resolveBridgeTargetId?(token: string, origin?: string, command?: CdpOverlayBridgeActionCommand): string | undefined;
+    /** Inspect active target grants (without exposing secret tokens). */
+    getActiveGrants?(): ReadonlyArray<{ targetId: string; allowedOrigin: string; targetUrl: string }>;
     dispose(): Promise<void>;
+}
+
+interface AttachedHubTarget {
+    targetId: string;
+    wsUrl: string;
+    targetUrl: string;
+    targetTitle?: string;
+    allowedOrigin: string;
+    client: CdpClientLike;
+    bootstrapped: boolean;
+    grant: OverlayTargetGrant;
+    unsubClose?: () => void;
+    unsubEvent?: () => void;
 }
 
 /**
  * Manages the full opt-in lifecycle for Antigravity App ambient Shadow DOM overlays:
- * - Strictly disabled by default (zero CDP probing until user turns a toggle on).
- * - Independent `appComposerRingEnabled` and `appTopBarEnabled` toggles with immediate unmount on disable.
- * - Silent, structured `cdp_unavailable` degradation with explicit `diagnosticCode` when Antigravity runs without `--remote-debugging-port`.
- * - Serialized connection/sync queue so concurrent `setToggles` / `updatePayload` / `recheck` calls never open duplicate WebSockets.
- * - Authenticated `127.0.0.1` loopback action bridge with 256-bit `X-Monitor-Token` & strict `Origin`.
+ * - Strictly disabled by default (ZERO CDP discovery, ZERO OS process probing, ZERO socket/eval until enabled).
+ * - Multi-window trust isolation: requires positive host/browser-session/Hub identification,
+ *   explicit `--remote-debugging-port=N` outranking stale `DevToolsActivePort`,
+ *   per-target allowed Origin & 256-bit minimal-capability action credential, and immediate
+ *   grant revocation on navigation, reload, detach, close, disable, or restart.
  */
 export function createCdpAmbientOverlayManager(
     options: CdpAmbientOverlayManagerOptions = {},
-): CdpAmbientOverlayManager & { recheck(): Promise<CdpStatus>; addExcludedPort(port: number): void } {
+): CdpAmbientOverlayManager & {
+    recheck(): Promise<CdpStatus>;
+    addExcludedPort(port: number): void;
+    validateBridgeGrant(token: string, origin?: string, command?: CdpOverlayBridgeActionCommand): boolean;
+    getActiveGrants(): ReadonlyArray<{ targetId: string; allowedOrigin: string; targetUrl: string }>;
+} {
     const platform = options.platform ?? process.platform;
     const env = options.env ?? process.env;
     const reconnectBackoffMs = options.reconnectBackoffMs ?? DEFAULT_RECONNECT_BACKOFF_MS;
+    const fastRecoveryBackoffMs = typeof options.fastRecoveryBackoffMs === 'number'
+        && Number.isFinite(options.fastRecoveryBackoffMs)
+        && options.fastRecoveryBackoffMs >= 10
+        ? options.fastRecoveryBackoffMs
+        : DEFAULT_FAST_RECOVER_BACKOFF_MS;
     const enableActionBridge = options.enableActionBridge !== false;
     const nowFn = options.now ?? (() => Date.now());
     const log = options.log ?? (() => {});
@@ -1401,14 +1467,51 @@ export function createCdpAmbientOverlayManager(
             env,
             customUserDataDir: discOpts?.customUserDataDir,
         }));
-    // When a test injects `discoverActivePort` without `inspectHostProcess`, keep it hermetic
-    // rather than inspecting the live developer/CI host process tree.
-    const inspectHostProcessFn = options.inspectHostProcess
-        ?? (options.discoverActivePort
-            ? () => ({ found: false, hasRemoteDebuggingFlag: false })
-            : () => inspectAntigravityHostProcess({ platform }));
+
+    // Low-frequency cached host process inspection (async on Windows; ZERO OS probing while disabled)
+    let cachedWindowsHostInfo: HostProcessInspectionResult | null = null;
+    let lastWindowsHostProbeAt = -Infinity;
+    let windowsHostProbeInFlight: Promise<HostProcessInspectionResult> | null = null;
+
+    async function inspectHostProcessAsync(forceRefresh = false): Promise<HostProcessInspectionResult> {
+        const runProbe = async (): Promise<HostProcessInspectionResult> => {
+            if (options.inspectHostProcess) {
+                return await Promise.resolve(options.inspectHostProcess());
+            }
+            // When a test injects `discoverActivePort` without `inspectHostProcess`, keep it hermetic
+            // rather than inspecting the live developer/CI host process tree.
+            if (options.discoverActivePort) {
+                return { found: false, hasRemoteDebuggingFlag: false };
+            }
+            return inspectAntigravityHostProcessAsync({ platform });
+        };
+
+        if (platform === 'win32') {
+            const nowMs = nowFn();
+            if (!forceRefresh && cachedWindowsHostInfo && Math.abs(nowMs - lastWindowsHostProbeAt) < WINDOWS_HOST_PROBE_TTL_MS) {
+                return cachedWindowsHostInfo;
+            }
+            if (!windowsHostProbeInFlight) {
+                windowsHostProbeInFlight = runProbe()
+                    .then((res) => {
+                        cachedWindowsHostInfo = res;
+                        lastWindowsHostProbeAt = nowFn();
+                        return res;
+                    })
+                    .catch(() => ({ found: false, hasRemoteDebuggingFlag: false }))
+                    .finally(() => {
+                        windowsHostProbeInFlight = null;
+                    });
+            }
+            return windowsHostProbeInFlight;
+        }
+        return runProbe();
+    }
+
     const inspectLauncherFn = options.inspectLauncher ?? (() => inspectCdpLauncher({ platform, env }));
     const fetchTargetsFn = options.fetchTargets ?? ((port: number) => fetchCdpTargets(port));
+    const fetchVersionFn = options.fetchVersion
+        ?? (options.fetchTargets ? undefined : ((port: number) => fetchCdpBrowserVersion(port)));
     const connectClientFn = options.connectClient ?? ((wsUrl: string) => CdpWebSocketClient.connect(wsUrl));
     const createBridgeFn = options.createBridge ?? createOverlayActionBridge;
 
@@ -1429,12 +1532,64 @@ export function createCdpAmbientOverlayManager(
     let lastLauncherCheckAt = -Infinity;
     let lastPayload: CdpOverlayPayload | null = null;
     let lastFailedAttemptAt = 0;
+    let fastRecoveryActive = false;
+    let fastRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
 
-    let client: CdpClientLike | null = null;
-    let bootstrapped = false;
+    const attachedTargets = new Map<string, AttachedHubTarget>();
+    const activeGrants = new Map<string, OverlayTargetGrant>();
     let bridge: OverlayActionBridgeHandle | null = null;
     let disposed = false;
     let opQueue: Promise<unknown> = Promise.resolve();
+
+    function clearFastRecoveryTimer(): void {
+        if (fastRecoveryTimer !== null) {
+            clearTimeout(fastRecoveryTimer);
+            fastRecoveryTimer = null;
+        }
+    }
+
+    function scheduleFastRecovery(): void {
+        if (disposed || !anyEnabled() || !fastRecoveryActive || attachedTargets.size > 0) {
+            clearFastRecoveryTimer();
+            return;
+        }
+        if (fastRecoveryTimer !== null) {
+            return;
+        }
+        fastRecoveryTimer = setTimeout(() => {
+            fastRecoveryTimer = null;
+            if (disposed || !anyEnabled() || !fastRecoveryActive || attachedTargets.size > 0) {
+                return;
+            }
+            void enqueue(async () => {
+                if (disposed || !anyEnabled() || !fastRecoveryActive || attachedTargets.size > 0) {
+                    return;
+                }
+                // Clear lastFailedAttemptAt so 1ms timer jitter never skips a scheduled fast recovery tick.
+                lastFailedAttemptAt = 0;
+                await syncToHub(false);
+            });
+        }, fastRecoveryBackoffMs);
+        if (typeof (fastRecoveryTimer as { unref?: () => void }).unref === 'function') {
+            (fastRecoveryTimer as { unref: () => void }).unref();
+        }
+    }
+
+    function handleTargetDisconnected(tid: string): void {
+        attachedTargets.delete(tid);
+        revokeGrantForTarget(tid);
+        refreshPrimaryTargetMetadata();
+        if (!disposed && anyEnabled() && attachedTargets.size === 0) {
+            // All Hub windows closed (e.g. macOS Dock without quitting Antigravity):
+            // drop immediately into fast 2–3s recovery so clicking Dock reattaches quickly.
+            state = 'cdp_unavailable';
+            diagnosticCode = 'no_hub_target';
+            errorMessage = 'All Antigravity Hub windows closed; waiting for window reopen';
+            lastFailedAttemptAt = 0;
+            fastRecoveryActive = true;
+            scheduleFastRecovery();
+        }
+    }
 
     const platformGuide = getCdpPlatformGuide(platform);
     const LAUNCHER_CACHE_TTL_MS = 2_000;
@@ -1462,8 +1617,77 @@ export function createCdpAmbientOverlayManager(
         return run;
     }
 
+    function refreshPrimaryTargetMetadata(): void {
+        const first = attachedTargets.values().next().value as AttachedHubTarget | undefined;
+        if (first) {
+            targetUrl = first.targetUrl;
+            targetTitle = first.targetTitle;
+        } else {
+            targetUrl = undefined;
+            targetTitle = undefined;
+        }
+    }
+
+    function mintGrantForTarget(targetId: string, origin: string, url: string): OverlayTargetGrant {
+        const grant: OverlayTargetGrant = {
+            targetId,
+            token: generateSessionToken(),
+            allowedOrigin: origin,
+            allowedCommands: new Set(ALLOWED_BRIDGE_COMMANDS),
+            issuedAt: nowFn(),
+            targetUrl: url,
+        };
+        activeGrants.set(targetId, grant);
+        bridge?.registerTargetGrant?.(grant);
+        bridge?.setAllowedOrigin(origin);
+        return grant;
+    }
+
+    function revokeGrantForTarget(targetId: string): void {
+        activeGrants.delete(targetId);
+        bridge?.revokeTargetGrant?.(targetId);
+    }
+
+    function revokeAllTargetGrants(): void {
+        activeGrants.clear();
+        bridge?.revokeAllGrants?.();
+    }
+
+    function resolveBridgeTargetId(
+        providedToken: string,
+        originHeader?: string,
+        command?: CdpOverlayBridgeActionCommand,
+    ): string | undefined {
+        const trimmed = typeof providedToken === 'string' ? providedToken.trim() : '';
+        if (!trimmed || activeGrants.size === 0) {
+            return undefined;
+        }
+        const parsed = parseLoopbackOriginHeader(originHeader);
+        if (!parsed.ok || !parsed.origin) {
+            return undefined;
+        }
+        const normalizedOrigin = parsed.origin;
+        for (const grant of activeGrants.values()) {
+            const tokenOk = constantTimeTokenEquals(trimmed, grant.token);
+            const originOk = grant.allowedOrigin === normalizedOrigin;
+            const cmdOk = !command || grant.allowedCommands.has(command);
+            if (tokenOk && originOk && cmdOk) {
+                return grant.targetId;
+            }
+        }
+        return undefined;
+    }
+
+    function getActiveGrants(): ReadonlyArray<{ targetId: string; allowedOrigin: string; targetUrl: string }> {
+        return [...activeGrants.values()].map(g => ({
+            targetId: g.targetId,
+            allowedOrigin: g.allowedOrigin,
+            targetUrl: g.targetUrl,
+        }));
+    }
+
     function getStatus(): CdpStatus {
-        const launcherStatus = getLauncherStatus(false);
+        const launcherStatus = anyEnabled() ? getLauncherStatus(false) : cachedLauncherStatus;
         return {
             state,
             diagnosticCode,
@@ -1481,23 +1705,50 @@ export function createCdpAmbientOverlayManager(
         };
     }
 
-    async function detachClient(unmountAll: boolean): Promise<void> {
-        const active = client;
-        client = null;
-        bootstrapped = false;
-        if (active && active.isOpen) {
+    // A page can navigate between target discovery and Runtime.evaluate.
+    // Check the actual document origin in the same evaluation as the operation.
+    function evaluateOnHub<T = unknown>(entry: AttachedHubTarget, expression: string, timeoutMs?: number): Promise<T> {
+        const guarded = `(function(){ if (window.location.origin !== ${safeJsonForScript(entry.allowedOrigin)}) {
+            return { ok: false, origin: window.location.origin };
+        } return ${expression} })()`;
+        return entry.client.evaluate<T>(guarded, timeoutMs);
+    }
+
+    async function detachTarget(targetId: string, unmountAll: boolean): Promise<void> {
+        const entry = attachedTargets.get(targetId);
+        attachedTargets.delete(targetId);
+        // Revoke credential IMMEDIATELY before awaiting async teardown
+        revokeGrantForTarget(targetId);
+        if (!entry) {
+            refreshPrimaryTargetMetadata();
+            return;
+        }
+        try { entry.unsubClose?.(); } catch { /* ignore */ }
+        try { entry.unsubEvent?.(); } catch { /* ignore */ }
+        if (entry.client.isOpen) {
             if (unmountAll) {
                 try {
-                    await active.evaluate(buildOverlayUnmountScript('all'), 2_000);
+                    await evaluateOnHub(entry, buildOverlayUnmountScript('all'), 2_000);
                 } catch {
                     // Best-effort cleanup; ignore errors if Hub is closing.
                 }
             }
-            await active.close().catch(() => {});
+            await entry.client.close().catch(() => {});
         }
+        refreshPrimaryTargetMetadata();
+    }
+
+    async function detachAllTargets(unmountAll: boolean): Promise<void> {
+        revokeAllTargetGrants();
+        const ids = [...attachedTargets.keys()];
+        for (const id of ids) {
+            await detachTarget(id, unmountAll);
+        }
+        refreshPrimaryTargetMetadata();
     }
 
     async function closeBridge(): Promise<void> {
+        revokeAllTargetGrants();
         const active = bridge;
         bridge = null;
         if (active) {
@@ -1505,45 +1756,55 @@ export function createCdpAmbientOverlayManager(
         }
     }
 
+    function pruneClosedTargets(): void {
+        for (const [id, entry] of [...attachedTargets.entries()]) {
+            if (!entry.client.isOpen) {
+                attachedTargets.delete(id);
+                revokeGrantForTarget(id);
+                try { entry.unsubClose?.(); } catch { /* ignore */ }
+                try { entry.unsubEvent?.(); } catch { /* ignore */ }
+            }
+        }
+        refreshPrimaryTargetMetadata();
+    }
+
     async function ensureConnected(forceRetry: boolean): Promise<boolean> {
         if (disposed || !anyEnabled()) { return false; }
-        if (client && client.isOpen) { return true; }
-        if (client && !client.isOpen) {
-            client = null;
-            bootstrapped = false;
-        }
+        pruneClosedTargets();
+        if (attachedTargets.size > 0 && !forceRetry) { return true; }
 
         const nowMs = nowFn();
-        if (!forceRetry && lastFailedAttemptAt > 0 && nowMs - lastFailedAttemptAt < reconnectBackoffMs) {
+        const effectiveBackoffMs = fastRecoveryActive
+            ? Math.min(reconnectBackoffMs, fastRecoveryBackoffMs)
+            : reconnectBackoffMs;
+        if (!forceRetry && lastFailedAttemptAt > 0 && nowMs - lastFailedAttemptAt < effectiveBackoffMs) {
             return false;
         }
 
         let hostInfo: HostProcessInspectionResult = { found: false, hasRemoteDebuggingFlag: false };
         try {
-            hostInfo = inspectHostProcessFn();
+            hostInfo = await inspectHostProcessAsync(forceRetry);
         } catch {
             hostInfo = { found: false, hasRemoteDebuggingFlag: false };
         }
+        if (disposed || !anyEnabled()) { return false; }
         hostHasDebugFlag = hostInfo.found ? hostInfo.hasRemoteDebuggingFlag : undefined;
 
-        const portInfo = discoverPortFn({ customUserDataDir: hostInfo.customUserDataDir });
         let targetPort: number;
-        if (portInfo) {
-            portFilePath = portInfo.filePath;
-            discoveredPort = portInfo.port;
-            targetPort = portInfo.port;
-        } else if (hostInfo.found && typeof hostInfo.explicitPort === 'number' && hostInfo.explicitPort > 0) {
-            // Host process passed an explicit fixed port (e.g. `--remote-debugging-port=9222`);
-            // probe it directly even when DevToolsActivePort is absent.
+        let expectedBrowserWsPath: string | undefined;
+        if (hostInfo.found && typeof hostInfo.explicitPort === 'number' && hostInfo.explicitPort > 0) {
+            // Explicit live host `--remote-debugging-port=N` ALWAYS outranks any stale DevToolsActivePort file.
             portFilePath = undefined;
             discoveredPort = hostInfo.explicitPort;
             targetPort = hostInfo.explicitPort;
-        } else {
+        } else if (hostInfo.found && hostInfo.hasRemoteDebuggingFlag === false) {
+            // Host process confirmed running WITHOUT `--remote-debugging-port` -> ignore stale DevToolsActivePort files.
+            await detachAllTargets(false);
+            fastRecoveryActive = false;
+            clearFastRecoveryTimer();
             lastFailedAttemptAt = nowMs;
             state = 'cdp_unavailable';
-            diagnosticCode = hostInfo.found && hostInfo.hasRemoteDebuggingFlag === false
-                ? 'host_missing_flag'
-                : 'missing_port_file';
+            diagnosticCode = 'host_missing_flag';
             portFilePath = resolveDevToolsActivePortPaths({
                 platform,
                 env,
@@ -1554,6 +1815,57 @@ export function createCdpAmbientOverlayManager(
             targetTitle = undefined;
             errorMessage = undefined;
             return false;
+        } else {
+            const portInfo = discoverPortFn({ customUserDataDir: hostInfo.customUserDataDir });
+            if (portInfo) {
+                portFilePath = portInfo.filePath;
+                discoveredPort = portInfo.port;
+                targetPort = portInfo.port;
+                expectedBrowserWsPath = portInfo.wsPath;
+            } else {
+                await detachAllTargets(false);
+                fastRecoveryActive = false;
+                clearFastRecoveryTimer();
+                lastFailedAttemptAt = nowMs;
+                state = 'cdp_unavailable';
+                diagnosticCode = 'missing_port_file';
+                portFilePath = resolveDevToolsActivePortPaths({
+                    platform,
+                    env,
+                    customUserDataDir: hostInfo.customUserDataDir,
+                })[0];
+                discoveredPort = undefined;
+                targetUrl = undefined;
+                targetTitle = undefined;
+                errorMessage = undefined;
+                return false;
+            }
+        }
+
+        // Verify positive browser-session ownership via /json/version when available.
+        // Fail closed when expectedBrowserWsPath (from DevToolsActivePort) is set and /json/version
+        // returns null or throws, so browser-session verification is never silently bypassed.
+        if (fetchVersionFn) {
+            let versionInfo: CdpBrowserVersionInfo | null = null;
+            let versionErr: unknown = null;
+            try {
+                versionInfo = await fetchVersionFn(targetPort);
+            } catch (err) {
+                versionErr = err;
+            }
+            if (disposed || !anyEnabled()) { return false; }
+            if (versionErr !== null || !isAuthorizedCdpBrowserSession(versionInfo, expectedBrowserWsPath, targetPort)) {
+                await detachAllTargets(false);
+                fastRecoveryActive = false;
+                clearFastRecoveryTimer();
+                lastFailedAttemptAt = nowMs;
+                state = 'cdp_unavailable';
+                diagnosticCode = 'no_hub_target';
+                targetUrl = undefined;
+                targetTitle = undefined;
+                errorMessage = 'CDP browser session verification failed (missing or mismatched browser/wsPath)';
+                return false;
+            }
         }
 
         let targets: CdpTargetInfo[];
@@ -1561,6 +1873,9 @@ export function createCdpAmbientOverlayManager(
             targets = await fetchTargetsFn(targetPort);
         } catch (err) {
             if (disposed || !anyEnabled()) { return false; }
+            await detachAllTargets(false);
+            fastRecoveryActive = false;
+            clearFastRecoveryTimer();
             lastFailedAttemptAt = nowMs;
             state = 'cdp_unavailable';
             diagnosticCode = 'port_unreachable';
@@ -1579,102 +1894,256 @@ export function createCdpAmbientOverlayManager(
             ...ownSidecarPorts,
             ...(bridge ? [bridge.port] : []),
         ];
-        const hubTarget = selectAntigravityHubTarget(targets, { excludePorts: excludedPorts, env });
-        if (!hubTarget || !hubTarget.webSocketDebuggerUrl) {
+        const hubTargets = selectAntigravityHubTargets(targets.filter(target =>
+            isCdpWebSocketAtPort(target.webSocketDebuggerUrl, targetPort)), { excludePorts: excludedPorts, env });
+        if (hubTargets.length === 0) {
+            await detachAllTargets(false);
             lastFailedAttemptAt = nowMs;
             state = 'cdp_unavailable';
             diagnosticCode = 'no_hub_target';
             targetUrl = undefined;
             targetTitle = undefined;
-            errorMessage = 'No Antigravity Hub target page found on CDP port';
+            errorMessage = 'No positively identified Antigravity Hub target page found on CDP port';
+            // Genuine reachable CDP port with zero Hub windows (e.g. macOS Dock closed-window state):
+            // activate fast 2–3s self-healing recovery polling.
+            fastRecoveryActive = true;
+            scheduleFastRecovery();
             return false;
         }
 
-        try {
-            const connected = await connectClientFn(hubTarget.webSocketDebuggerUrl);
-            if (disposed || !anyEnabled()) {
-                await connected.close().catch(() => {});
-                return false;
+        // Reconcile existing attached targets against live target list: revoke & detach disappeared or cross-origin navigated windows
+        const liveById = new Map<string, { target: CdpTargetInfo; origin: string }>();
+        for (const t of hubTargets) {
+            if (!t.url || !t.webSocketDebuggerUrl) { continue; }
+            try {
+                const origin = new URL(t.url).origin;
+                const tid = (t.id && t.id.trim()) || t.webSocketDebuggerUrl;
+                liveById.set(tid, { target: t, origin });
+            } catch { /* ignore malformed URL */ }
+        }
+        for (const [existingId, entry] of [...attachedTargets.entries()]) {
+            const live = liveById.get(existingId);
+            if (!live || live.origin !== entry.allowedOrigin || live.target.webSocketDebuggerUrl !== entry.wsUrl) {
+                await detachTarget(existingId, false);
             }
-            client = connected;
-            bootstrapped = false;
-            targetUrl = hubTarget.url;
-            targetTitle = hubTarget.title;
-            errorMessage = undefined;
-            state = 'connected';
-            diagnosticCode = 'connected';
+        }
 
-            if (enableActionBridge) {
-                const targetOrigin = hubTarget.url ? new URL(hubTarget.url).origin : undefined;
-                if (!bridge) {
-                    const createdBridge = await createBridgeFn({
-                        onAction: options.onBridgeAction,
-                        allowedOrigin: targetOrigin,
+        // Connect any newly discovered Hub windows first (so bridge is never started if WS connect fails),
+        // then start the loopback action bridge and register per-target Origin-bound credentials.
+        let lastConnectErr: unknown;
+        for (const [tid, { target: hubTarget, origin: targetOrigin }] of liveById.entries()) {
+            const existing = attachedTargets.get(tid);
+            if (existing && existing.client.isOpen) {
+                existing.targetUrl = hubTarget.url!;
+                existing.targetTitle = hubTarget.title;
+                continue;
+            }
+            try {
+                const connected = await connectClientFn(hubTarget.webSocketDebuggerUrl!);
+                if (disposed || !anyEnabled()) {
+                    await connected.close().catch(() => {});
+                    return false;
+                }
+                const grant = mintGrantForTarget(tid, targetOrigin, hubTarget.url!);
+                const entry: AttachedHubTarget = {
+                    targetId: tid,
+                    wsUrl: hubTarget.webSocketDebuggerUrl!,
+                    targetUrl: hubTarget.url!,
+                    targetTitle: hubTarget.title,
+                    allowedOrigin: targetOrigin,
+                    client: connected,
+                    bootstrapped: false,
+                    grant,
+                };
+                if (typeof connected.onClose === 'function') {
+                    entry.unsubClose = connected.onClose(() => {
+                        handleTargetDisconnected(tid);
                     });
+                }
+                if (typeof connected.onEvent === 'function') {
+                    entry.unsubEvent = connected.onEvent((method, params) => {
+                        if (method === 'Inspector.detached' || method === 'Target.detachedFromTarget') {
+                            handleTargetDisconnected(tid);
+                        } else if (method === 'Page.frameNavigated') {
+                            const frame = params?.frame as { parentId?: string; url?: string } | undefined;
+                            // Main-frame navigation -> revoke immediately if origin changed or rotate token on reload
+                            if (frame && !frame.parentId) {
+                                let navOrigin = '';
+                                try { navOrigin = frame.url ? new URL(frame.url).origin : ''; } catch { navOrigin = ''; }
+                                revokeGrantForTarget(tid);
+                                entry.bootstrapped = false;
+                                if (!navOrigin || navOrigin !== entry.allowedOrigin) {
+                                    handleTargetDisconnected(tid);
+                                    void connected.close().catch(() => {});
+                                } else {
+                                    entry.grant = mintGrantForTarget(tid, entry.allowedOrigin, frame.url || entry.targetUrl);
+                                }
+                            }
+                        }
+                    });
+                }
+                attachedTargets.set(tid, entry);
+                // Enable the CDP Page domain so Chromium/Electron emits Page.frameNavigated on reload/navigation.
+                if (typeof connected.send === 'function') {
+                    await connected.send('Page.enable').catch(() => {});
                     if (disposed || !anyEnabled()) {
-                        await createdBridge.close().catch(() => {});
-                        await detachClient(false);
+                        await detachAllTargets(false);
                         return false;
                     }
-                    bridge = createdBridge;
-                } else {
-                    bridge.setAllowedOrigin(targetOrigin);
+                    if (!connected.isOpen) {
+                        await detachTarget(tid, false);
+                    }
                 }
+            } catch (err) {
+                lastConnectErr = err;
+                revokeGrantForTarget(tid);
             }
-            return true;
-        } catch (err) {
-            await detachClient(false);
+        }
+
+        refreshPrimaryTargetMetadata();
+        if (attachedTargets.size === 0) {
+            await detachAllTargets(false);
             if (disposed || !anyEnabled()) { return false; }
+            fastRecoveryActive = false;
+            clearFastRecoveryTimer();
             lastFailedAttemptAt = nowMs;
             state = 'error';
             diagnosticCode = 'ws_error';
-            targetUrl = undefined;
-            targetTitle = undefined;
-            errorMessage = err instanceof Error ? err.message : String(err);
+            errorMessage = lastConnectErr instanceof Error ? lastConnectErr.message : String(lastConnectErr ?? 'WebSocket connection failed');
             log(`[CDP Overlay] Connection error: ${errorMessage}`);
             return false;
         }
+
+        // Ensure loopback action bridge is ready and bind all active target grants.
+        // If bridge startup fails, immediately detach & close all open WebSockets (zero socket leak!).
+        if (enableActionBridge && !bridge) {
+            const primaryOrigin = attachedTargets.values().next().value?.allowedOrigin;
+            try {
+                const createdBridge = await createBridgeFn({
+                    onAction: options.onBridgeAction,
+                    allowedOrigin: primaryOrigin,
+                });
+                if (disposed || !anyEnabled()) {
+                    await createdBridge.close().catch(() => {});
+                    await detachAllTargets(false);
+                    return false;
+                }
+                bridge = createdBridge;
+                for (const entry of attachedTargets.values()) {
+                    bridge.registerTargetGrant?.(entry.grant);
+                }
+            } catch (err) {
+                await detachAllTargets(false);
+                if (disposed || !anyEnabled()) { return false; }
+                fastRecoveryActive = false;
+                clearFastRecoveryTimer();
+                lastFailedAttemptAt = nowMs;
+                state = 'error';
+                diagnosticCode = 'ws_error';
+                errorMessage = err instanceof Error ? err.message : String(err);
+                log(`[CDP Overlay] Bridge startup error: ${errorMessage}`);
+                return false;
+            }
+        }
+
+        fastRecoveryActive = false;
+        clearFastRecoveryTimer();
+        errorMessage = undefined;
+        state = 'connected';
+        diagnosticCode = 'connected';
+        return true;
     }
 
-    async function syncToHub(forceRetry: boolean): Promise<CdpStatus> {
+    async function syncToHub(forceRetry: boolean, allowStaleSocketRetry = forceRetry): Promise<CdpStatus> {
         if (disposed || !anyEnabled()) {
             return getStatus();
         }
         const ok = await ensureConnected(forceRetry);
-        if (!ok || !client || disposed || !anyEnabled()) {
+        if (!ok || attachedTargets.size === 0 || disposed || !anyEnabled()) {
             return getStatus();
         }
 
-        try {
-            if (!bootstrapped) {
-                await client.evaluate(buildOverlayBootstrapScript());
-                bootstrapped = true;
+        let anySuccess = false;
+        let lastEvalError: string | undefined;
+
+        for (const [tid, entry] of [...attachedTargets.entries()]) {
+            if (disposed || !anyEnabled()) { break; }
+            if (!entry.client.isOpen) {
+                await detachTarget(tid, false);
+                continue;
             }
-            if (lastPayload) {
-                const enrichedPayload: CdpOverlayPayload = bridge
-                    ? { ...lastPayload, bridgeUrl: bridge.url, bridgeToken: bridge.token }
-                    : lastPayload;
-                const res = await client.evaluate<{ ok?: boolean; missingRuntime?: boolean }>(
-                    buildOverlayUpdateScript(enrichedPayload, toggles),
-                );
-                // If Hub reloaded between ticks, re-bootstrap seamlessly once.
-                if (res && res.missingRuntime) {
-                    await client.evaluate(buildOverlayBootstrapScript());
-                    await client.evaluate(buildOverlayUpdateScript(enrichedPayload, toggles));
+            try {
+                if (!entry.bootstrapped || (forceRetry && !lastPayload)) {
+                    await evaluateOnHub(entry, buildOverlayBootstrapScript());
+                    entry.bootstrapped = true;
                 }
+                if (lastPayload) {
+                    const scopedPayload = options.payloadForTarget?.(tid, lastPayload) ?? lastPayload;
+                    const enrichedPayload: CdpOverlayPayload = bridge
+                        ? { ...scopedPayload, bridgeUrl: bridge.url, bridgeToken: entry.grant.token }
+                        : scopedPayload;
+                    const res = await evaluateOnHub<{
+                        ok?: boolean;
+                        missingRuntime?: boolean;
+                        buildIdMismatch?: boolean;
+                        origin?: string;
+                    }>(entry, buildOverlayUpdateScript(enrichedPayload, toggles, { expectedBuildId: CDP_OVERLAY_BUILD_ID }));
+
+                    // Detect cross-origin navigation -> revoke grant IMMEDIATELY and detach!
+                    if (res && typeof res.origin === 'string' && res.origin && res.origin !== entry.allowedOrigin) {
+                        log(`[CDP Overlay] Origin changed on target ${tid} (${entry.allowedOrigin} -> ${res.origin}); revoking grant`);
+                        await detachTarget(tid, true);
+                        continue;
+                    }
+
+                    // If Hub reloaded or bundle buildId drifted between ticks, rotate per-target credential and re-bootstrap once.
+                    if (res && res.missingRuntime) {
+                        revokeGrantForTarget(tid);
+                        entry.grant = mintGrantForTarget(tid, entry.allowedOrigin, entry.targetUrl);
+                        await evaluateOnHub(entry, buildOverlayBootstrapScript());
+                        const rotatedPayload: CdpOverlayPayload = bridge
+                            ? { ...scopedPayload, bridgeUrl: bridge.url, bridgeToken: entry.grant.token }
+                            : scopedPayload;
+                        await evaluateOnHub(entry, buildOverlayUpdateScript(rotatedPayload, toggles, { expectedBuildId: CDP_OVERLAY_BUILD_ID }));
+                    }
+                }
+                anySuccess = true;
+            } catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                lastEvalError = msg;
+                await detachTarget(tid, false);
+                log(`[CDP Overlay] Evaluation error on target ${tid}: ${msg}`);
             }
+        }
+
+        refreshPrimaryTargetMetadata();
+        // On explicit Recheck CDP, if every previously open socket failed eval (e.g. half-open stale WS),
+        // retry discovery & connect once immediately so manual Recheck recovers in a single click.
+        if (!anySuccess && lastEvalError && allowStaleSocketRetry && attachedTargets.size === 0 && !disposed && anyEnabled()) {
+            lastFailedAttemptAt = 0;
+            return syncToHub(true, false);
+        }
+
+        if (anySuccess) {
             lastInjectedAt = nowFn();
+            fastRecoveryActive = false;
+            clearFastRecoveryTimer();
             state = 'connected';
             diagnosticCode = 'connected';
             errorMessage = undefined;
-        } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            errorMessage = msg;
+        } else if (lastEvalError) {
+            fastRecoveryActive = false;
+            clearFastRecoveryTimer();
+            errorMessage = lastEvalError;
             state = 'error';
             diagnosticCode = 'eval_error';
             lastFailedAttemptAt = nowFn();
-            await detachClient(false);
-            log(`[CDP Overlay] Evaluation error: ${msg}`);
+        } else if (attachedTargets.size === 0) {
+            state = 'cdp_unavailable';
+            diagnosticCode = 'no_hub_target';
+            lastFailedAttemptAt = nowFn();
+            fastRecoveryActive = true;
+            scheduleFastRecovery();
         }
         return getStatus();
     }
@@ -1689,7 +2158,9 @@ export function createCdpAmbientOverlayManager(
             };
 
             if (!anyEnabled()) {
-                await detachClient(true);
+                fastRecoveryActive = false;
+                clearFastRecoveryTimer();
+                await detachAllTargets(true);
                 await closeBridge();
                 state = 'disabled';
                 diagnosticCode = 'disabled';
@@ -1700,17 +2171,17 @@ export function createCdpAmbientOverlayManager(
                 hostHasDebugFlag = undefined;
                 errorMessage = undefined;
                 lastFailedAttemptAt = 0;
-                getLauncherStatus(true);
                 return getStatus();
             }
 
-            // If one toggle was turned off while the other stayed on, unmount the disabled slot immediately.
-            if (client && client.isOpen) {
+            // If one toggle was turned off while the other stayed on, unmount the disabled slot immediately on all windows.
+            for (const entry of attachedTargets.values()) {
+                if (!entry.client.isOpen) { continue; }
                 if (prev.appComposerRingEnabled && !toggles.appComposerRingEnabled) {
-                    await client.evaluate(buildOverlayUnmountScript('composer'), 2_000).catch(() => {});
+                    await evaluateOnHub(entry, buildOverlayUnmountScript('composer'), 2_000).catch(() => {});
                 }
                 if (prev.appTopBarEnabled && !toggles.appTopBarEnabled) {
-                    await client.evaluate(buildOverlayUnmountScript('topbar'), 2_000).catch(() => {});
+                    await evaluateOnHub(entry, buildOverlayUnmountScript('topbar'), 2_000).catch(() => {});
                 }
             }
 
@@ -1738,11 +2209,12 @@ export function createCdpAmbientOverlayManager(
             if (disposed || !anyEnabled()) {
                 return getStatus();
             }
+            // Bypass all caches, backoff, and stale sockets on explicit Recheck CDP.
+            cachedWindowsHostInfo = null;
+            lastWindowsHostProbeAt = -Infinity;
             lastFailedAttemptAt = 0;
-            if (client && !client.isOpen) {
-                client = null;
-                bootstrapped = false;
-            }
+            clearFastRecoveryTimer();
+            pruneClosedTargets();
             return syncToHub(true);
         });
     }
@@ -1752,9 +2224,11 @@ export function createCdpAmbientOverlayManager(
             return opQueue.then(() => undefined, () => undefined);
         }
         disposed = true;
+        fastRecoveryActive = false;
+        clearFastRecoveryTimer();
         toggles = { appComposerRingEnabled: false, appTopBarEnabled: false };
         return enqueue(async () => {
-            await detachClient(true);
+            await detachAllTargets(true);
             await closeBridge();
             state = 'disabled';
             diagnosticCode = 'disabled';
@@ -1774,6 +2248,9 @@ export function createCdpAmbientOverlayManager(
         updatePayload,
         recheck,
         addExcludedPort,
+        resolveBridgeTargetId,
+        validateBridgeGrant: (token, origin, command) => Boolean(resolveBridgeTargetId(token, origin, command)),
+        getActiveGrants,
         dispose,
     };
 }

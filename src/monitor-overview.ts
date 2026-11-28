@@ -1,3 +1,9 @@
+import {
+    projectForOverview,
+    type PublishedMonitorObservation,
+    type SurfaceObservationProjection,
+} from './core/context-display';
+import { formatCurrencyAmount, resolveCurrencyConfig, type CurrencyInput } from './core/currency';
 import type { GMSummary } from './gm/types';
 import { getLanguage, t, tBi } from './i18n';
 import { groupModelQuotas, type QuotaEffort, type QuotaReadingSummary, type ModelQuotaGroup } from './model-quota';
@@ -54,6 +60,26 @@ export function getContextReading(usage: ContextUsage) {
     const limit = usableCount(usage.contextLimit) && usage.contextLimit > 0 ? usage.contextLimit : null;
     const ratio = used !== null && limit !== null ? used / limit * 100 : NaN;
     return { used, limit, percent: Number.isFinite(ratio) ? ratio : null };
+}
+
+/**
+ * Project canonical D9 context reading fields directly from a frozen
+ * `PublishedMonitorObservation` so Overview shares exact parity with Native HUD
+ * and CDP overlays.
+ */
+export function getContextReadingFromObservation(obs: PublishedMonitorObservation): {
+    used: number | null;
+    limit: number | null;
+    percent: number | null;
+    projection: SurfaceObservationProjection;
+} {
+    const projection = projectForOverview(obs);
+    return {
+        used: projection.usedTokens,
+        limit: projection.denominatorTokens,
+        percent: projection.primaryPct,
+        projection,
+    };
 }
 
 export function getContextRemaining(used: number | null, limit: number | null): { tokens: number; percent: number } | null {
@@ -280,10 +306,20 @@ export function formatOverviewSavings(usd: number | null | undefined): string | 
     return formatSavingsUsd(usd);
 }
 
-/** USD cost formatter for Session / Today cost pills; omits non-finite or negative inputs. */
-export function formatOverviewCost(usd: number | null | undefined): string | null {
+/** Cost formatter for Session / Today cost pills; omits non-finite or negative inputs. */
+export function formatOverviewCost(
+    usd: number | null | undefined,
+    displayCurrency?: CurrencyInput,
+): string | null {
     if (usd === null || usd === undefined || !Number.isFinite(usd) || usd < 0) {
         return null;
+    }
+    if (displayCurrency) {
+        const { preset } = resolveCurrencyConfig(displayCurrency);
+        if (preset.code !== 'USD') {
+            const converted = formatCurrencyAmount(usd, displayCurrency, { mode: 'standard' });
+            return converted === '—' ? null : converted;
+        }
     }
     const formatted = formatUsdCost(usd, { precision: 'standard' });
     return formatted === '—' ? null : formatted;

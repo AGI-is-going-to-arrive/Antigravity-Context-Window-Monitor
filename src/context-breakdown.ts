@@ -129,6 +129,8 @@ export interface ContextBreakdownSnapshot {
     largestItems: LargestContextItem[];
     stepCount: number;
     hasPromptSections: boolean;
+    /** Branch-scoped peak step count to carry forward (resets on rewind/fork/compaction to prevent peak stickiness). */
+    recommendedBranchPeakStepCount?: number;
 }
 
 export interface PromptSectionLike {
@@ -195,13 +197,190 @@ export interface GeneratorMetadataLike {
 export interface ContextBreakdownInput {
     generatorMetadata?: ReadonlyArray<GeneratorMetadataLike | Record<string, unknown>>;
     steps?: ReadonlyArray<Record<string, unknown>>;
+    /** Starting step offset for `steps[0]` when `steps` is a recovered live tail suffix. */
+    suffixStartOffset?: number;
     currentStepCount?: number;
     previousMaxStepCount?: number;
+    /** Immediately preceding observed step count on the previous poll (distinct from all-time peak). */
+    previousStepCount?: number;
+    /** Branch-scoped peak step count (from `BranchStepPeakTracker`); takes precedence over all-time `previousMaxStepCount`. */
+    branchPeakStepCount?: number;
+    /** True when this trajectory is a fork or started on a new branch (never stuck in `estimated_rewind`). */
+    isFork?: boolean;
+    /** True when the trajectory's branch/content revision changed (resets step peak to current branch). */
+    branchChanged?: boolean;
     previousUsedTokens?: number;
     model?: string;
     modelDisplayName?: string;
     effectiveBudgetTokens?: number;
     nativeLimitTokens?: number;
+}
+
+export interface BranchStepPeakState {
+    branchEpoch: number;
+    branchPeakStepCount: number;
+    lastObservedStepCount: number;
+    lastBranchRevision: string | null;
+    inRewind: boolean;
+    rewindBaselineStepCount: number | null;
+}
+
+export interface BranchStepPeakObservation {
+    stepCount: number;
+    isFork?: boolean;
+    branchRevision?: string | null;
+    hasMeasuredGeneration?: boolean;
+    hasPostCompactionReset?: boolean;
+}
+
+export interface BranchStepPeakAdvanceResult {
+    state: BranchStepPeakState;
+    /** True ONLY while actively in a rewind transition before forward progress resumes on the new branch. */
+    isRewind: boolean;
+    /** Branch-scoped peak to pass into `parseContextBreakdown({ branchPeakStepCount })`. */
+    effectiveBranchPeakStepCount: number;
+    /** True when the branch peak was reset due to rewind, fork, branch change, or compaction. */
+    peakReset: boolean;
+}
+
+/**
+ * Pure branch-scoped step peak state machine.
+ * Fixes `estimated_rewind` all-time peak stickiness:
+ * - When `stepCount` shrinks on the same branch, reports `isRewind: true` AND resets
+ *   `branchPeakStepCount` to the rewound step count so forward progress (`stepCount > rewindBaseline`)
+ *   immediately exits `estimated_rewind` without waiting to exceed the old pre-fork/pre-rewind peak.
+ * - Forks (`isFork: true`), branch revision changes, and post-compaction resets cleanly start a new
+ *   branch-scoped peak immediately.
+ */
+export function advanceBranchStepPeak(
+    prev: BranchStepPeakState | undefined,
+    obs: BranchStepPeakObservation,
+): BranchStepPeakAdvanceResult {
+    const stepCount = Number.isFinite(obs.stepCount) && obs.stepCount >= 0 ? Math.round(obs.stepCount) : 0;
+    const rev = typeof obs.branchRevision === 'string' && obs.branchRevision.trim() ? obs.branchRevision.trim() : null;
+
+    if (!prev) {
+        const state: BranchStepPeakState = {
+            branchEpoch: 1,
+            branchPeakStepCount: stepCount,
+            lastObservedStepCount: stepCount,
+            lastBranchRevision: rev,
+            inRewind: false,
+            rewindBaselineStepCount: null,
+        };
+        return { state, isRewind: false, effectiveBranchPeakStepCount: stepCount, peakReset: false };
+    }
+
+    // Explicit fork or branch revision switch resets peak to the new branch immediately
+    const revisionChanged = Boolean(rev && prev.lastBranchRevision && rev !== prev.lastBranchRevision);
+    if (obs.isFork === true || revisionChanged) {
+        const state: BranchStepPeakState = {
+            branchEpoch: prev.branchEpoch + 1,
+            branchPeakStepCount: stepCount,
+            lastObservedStepCount: stepCount,
+            lastBranchRevision: rev ?? prev.lastBranchRevision,
+            inRewind: false,
+            rewindBaselineStepCount: null,
+        };
+        return { state, isRewind: false, effectiveBranchPeakStepCount: stepCount, peakReset: true };
+    }
+
+    // Post-compaction reset starts fresh peak on the post-compaction segment
+    if (obs.hasPostCompactionReset === true) {
+        const state: BranchStepPeakState = {
+            branchEpoch: prev.branchEpoch + 1,
+            branchPeakStepCount: stepCount,
+            lastObservedStepCount: stepCount,
+            lastBranchRevision: rev ?? prev.lastBranchRevision,
+            inRewind: false,
+            rewindBaselineStepCount: null,
+        };
+        return { state, isRewind: false, effectiveBranchPeakStepCount: stepCount, peakReset: true };
+    }
+
+    // Genuine step shrink below the current branch's peak -> enter rewind and re-anchor peak!
+    if (stepCount < prev.branchPeakStepCount) {
+        const priorPeak = prev.branchPeakStepCount;
+        const state: BranchStepPeakState = {
+            branchEpoch: prev.branchEpoch + 1,
+            branchPeakStepCount: stepCount,
+            lastObservedStepCount: stepCount,
+            lastBranchRevision: rev ?? prev.lastBranchRevision,
+            inRewind: true,
+            rewindBaselineStepCount: stepCount,
+        };
+        return {
+            state,
+            isRewind: true,
+            effectiveBranchPeakStepCount: priorPeak,
+            peakReset: true,
+        };
+    }
+
+    // Forward progress after a rewind immediately clears `inRewind` — NEVER waiting to reach old all-time peak!
+    if (prev.inRewind) {
+        const progressedForward = prev.rewindBaselineStepCount !== null && stepCount > prev.rewindBaselineStepCount;
+        if (progressedForward || obs.hasMeasuredGeneration === true) {
+            const nextPeak = Math.max(prev.branchPeakStepCount, stepCount);
+            const state: BranchStepPeakState = {
+                branchEpoch: prev.branchEpoch,
+                branchPeakStepCount: nextPeak,
+                lastObservedStepCount: stepCount,
+                lastBranchRevision: rev ?? prev.lastBranchRevision,
+                inRewind: false,
+                rewindBaselineStepCount: null,
+            };
+            return { state, isRewind: false, effectiveBranchPeakStepCount: nextPeak, peakReset: false };
+        }
+        // Still parked at exact rewound step with no new generation yet
+        const state: BranchStepPeakState = {
+            ...prev,
+            lastObservedStepCount: stepCount,
+            lastBranchRevision: rev ?? prev.lastBranchRevision,
+        };
+        return {
+            state,
+            isRewind: true,
+            effectiveBranchPeakStepCount: stepCount + 1,
+            peakReset: false,
+        };
+    }
+
+    const nextPeak = Math.max(prev.branchPeakStepCount, stepCount);
+    const state: BranchStepPeakState = {
+        branchEpoch: prev.branchEpoch,
+        branchPeakStepCount: nextPeak,
+        lastObservedStepCount: stepCount,
+        lastBranchRevision: rev ?? prev.lastBranchRevision,
+        inRewind: false,
+        rewindBaselineStepCount: null,
+    };
+    return { state, isRewind: false, effectiveBranchPeakStepCount: nextPeak, peakReset: false };
+}
+
+/**
+ * Per-cascade branch-scoped step peak tracker replacing naive all-time `Math.max` maps.
+ */
+export class BranchStepPeakTracker {
+    private readonly states = new Map<string, BranchStepPeakState>();
+
+    public get(cascadeId: string): BranchStepPeakState | undefined {
+        return this.states.get(cascadeId);
+    }
+
+    public observe(cascadeId: string, obs: BranchStepPeakObservation): BranchStepPeakAdvanceResult {
+        const res = advanceBranchStepPeak(this.states.get(cascadeId), obs);
+        this.states.set(cascadeId, res.state);
+        return res;
+    }
+
+    public reset(cascadeId: string): void {
+        this.states.delete(cascadeId);
+    }
+
+    public clear(): void {
+        this.states.clear();
+    }
 }
 
 export interface ContextQuotaSummaryLine {
@@ -832,6 +1011,7 @@ function attributeSteps(
     steps: ReadonlyArray<Record<string, unknown>>,
     minStepIndexExclusive = -1,
     maxStepIndexInclusive = Number.POSITIVE_INFINITY,
+    stepIndexOffset = 0,
 ): StepAttributionResult {
     const byCategory = createEmptyCategoryCounters();
     const items: RawContextItem[] = [];
@@ -851,7 +1031,7 @@ function attributeSteps(
         if (!step) { continue; }
         const stepIndex = typeof step.stepIndex === 'number' && Number.isFinite(step.stepIndex) && step.stepIndex >= 0
             ? Math.round(step.stepIndex)
-            : i;
+            : stepIndexOffset + i;
         if (stepIndex <= minStepIndexExclusive || stepIndex > maxStepIndexInclusive) { continue; }
 
         const stepType = typeof step.type === 'string' ? step.type : '';
@@ -936,6 +1116,7 @@ function detectCompactionCheckpoints(
     gmRecords: readonly ParsedGmRecord[],
     stepPoints: readonly StepUsagePoint[],
     steps: ReadonlyArray<Record<string, unknown>>,
+    stepIndexOffset = 0,
 ): {
     checkpoints: CompactionCheckpoint[];
     hasUnmeasuredPostCompaction: boolean;
@@ -953,7 +1134,7 @@ function detectCompactionCheckpoints(
         if (stepType !== StepType.CHECKPOINT && !stepType.toUpperCase().includes('CHECKPOINT')) { continue; }
         const stepIndex = typeof step.stepIndex === 'number' && Number.isFinite(step.stepIndex) && step.stepIndex >= 0
             ? Math.round(step.stepIndex)
-            : i;
+            : stepIndexOffset + i;
         const cp = asRecord(step.checkpoint);
         const meta = asRecord(step.metadata);
         checkpointStepIndices.push({
@@ -1103,11 +1284,17 @@ export function parseContextBreakdown(input: ContextBreakdownInput): ContextBrea
         if (parsed) { gmRecords.push(parsed); }
     }
 
+    const stepIndexOffset = typeof input.suffixStartOffset === 'number'
+        && Number.isFinite(input.suffixStartOffset)
+        && input.suffixStartOffset > 0
+        ? Math.round(input.suffixStartOffset)
+        : 0;
+
     const stepPoints: StepUsagePoint[] = [];
     for (let i = 0; i < rawSteps.length; i++) {
         const step = asRecord(rawSteps[i]);
         if (!step) { continue; }
-        const pt = extractStepUsagePoint(step, i);
+        const pt = extractStepUsagePoint(step, stepIndexOffset + i);
         if (pt) { stepPoints.push(pt); }
     }
 
@@ -1120,11 +1307,41 @@ export function parseContextBreakdown(input: ContextBreakdownInput): ContextBrea
         ? Math.round(input.currentStepCount)
         : (rawSteps.length > 0 ? rawSteps.length : (maxGmStep >= 0 ? maxGmStep + 1 : 0));
 
-    // Rewind detection: shrinking step count MUST be classified as estimated_rewind, NOT compaction!
-    const isRewind = typeof input.previousMaxStepCount === 'number'
+    // Rewind detection (branch-scoped to prevent all-time peak stickiness on fork/post-rewind growth):
+    // - Explicit fork (`isFork`) or branch switch (`branchChanged`) starts a fresh branch peak and
+    //   NEVER stays stuck in `estimated_rewind` waiting to exceed the pre-fork peak.
+    // - Explicit `branchPeakStepCount` (from `BranchStepPeakTracker`) takes precedence over all-time `previousMaxStepCount`.
+    // - When `previousStepCount` is supplied alongside `previousMaxStepCount`, forward step growth
+    //   (`stepCount > previousStepCount`) breaks out of rewind immediately instead of clinging to the old peak.
+    // - Shrinking step count on the active branch MUST be classified as `estimated_rewind`, NOT compaction!
+    const hasBranchPeak = typeof input.branchPeakStepCount === 'number'
+        && Number.isFinite(input.branchPeakStepCount)
+        && input.branchPeakStepCount > 0;
+    const hasPrevStep = typeof input.previousStepCount === 'number'
+        && Number.isFinite(input.previousStepCount)
+        && input.previousStepCount >= 0;
+    const hasPrevMax = typeof input.previousMaxStepCount === 'number'
         && Number.isFinite(input.previousMaxStepCount)
-        && input.previousMaxStepCount > 0
-        && stepCount < input.previousMaxStepCount;
+        && input.previousMaxStepCount > 0;
+
+    let isRewind = false;
+    if (input.isFork === true || input.branchChanged === true) {
+        isRewind = hasBranchPeak && stepCount < input.branchPeakStepCount!;
+    } else if (hasBranchPeak) {
+        isRewind = stepCount < input.branchPeakStepCount!;
+    } else if (hasPrevStep) {
+        if (stepCount < input.previousStepCount!) {
+            isRewind = true;
+        } else if (stepCount > input.previousStepCount!) {
+            // Forward progress resumed on the new/post-rewind branch — release all-time peak stickiness!
+            isRewind = false;
+        } else {
+            // Same step count as previous poll: stay in rewind only while below previous peak without forward progress
+            isRewind = hasPrevMax && stepCount < input.previousMaxStepCount!;
+        }
+    } else if (hasPrevMax) {
+        isRewind = stepCount < input.previousMaxStepCount!;
+    }
 
     const latestMeasuredGm = [...gmRecords].reverse().find(g => g.hasUsage) || null;
     const latestSectionsGm = [...gmRecords].reverse().find(g => g.promptSections.length > 0) || null;
@@ -1141,7 +1358,18 @@ export function parseContextBreakdown(input: ContextBreakdownInput): ContextBrea
             lastCompactionStepIndex: -1,
             newestFullCheckpoint: null as { stepIndex: number; timestamp?: string } | null,
         }
-        : detectCompactionCheckpoints(gmRecords, stepPoints, rawSteps);
+        : detectCompactionCheckpoints(gmRecords, stepPoints, rawSteps, stepIndexOffset);
+
+    // Branch-scoped peak recommendation: resets to `stepCount` on rewind, fork, branch switch, or post-compaction
+    // so callers carrying forward `recommendedBranchPeakStepCount` never get stuck on an old all-time peak.
+    const recommendedBranchPeakStepCount = (
+        isRewind
+        || input.isFork === true
+        || input.branchChanged === true
+        || compactionInfo.hasUnmeasuredPostCompaction
+    )
+        ? stepCount
+        : Math.max(stepCount, hasBranchPeak ? input.branchPeakStepCount! : (hasPrevStep ? input.previousStepCount! : 0));
 
     // Measurement state classification
     let measurementState: ContextMeasurementState;
@@ -1213,10 +1441,10 @@ export function parseContextBreakdown(input: ContextBreakdownInput): ContextBrea
     };
 
     const activeStepsAttribution = latestMeasuredStepIndex >= 0
-        ? attributeSteps(rawSteps, compactionInfo.lastCompactionStepIndex, latestMeasuredStepIndex)
-        : attributeSteps(rawSteps, compactionInfo.lastCompactionStepIndex);
+        ? attributeSteps(rawSteps, compactionInfo.lastCompactionStepIndex, latestMeasuredStepIndex, stepIndexOffset)
+        : attributeSteps(rawSteps, compactionInfo.lastCompactionStepIndex, Number.POSITIVE_INFINITY, stepIndexOffset);
     const postMeasuredStepsAttribution = latestMeasuredStepIndex >= 0
-        ? attributeSteps(rawSteps, Math.max(latestMeasuredStepIndex, compactionInfo.lastCompactionStepIndex))
+        ? attributeSteps(rawSteps, Math.max(latestMeasuredStepIndex, compactionInfo.lastCompactionStepIndex), Number.POSITIVE_INFINITY, stepIndexOffset)
         : createEmptyStepAttribution();
 
     const compactionCheckpoints = [...compactionInfo.checkpoints];
@@ -1226,7 +1454,7 @@ export function parseContextBreakdown(input: ContextBreakdownInput): ContextBrea
         // retain fixed system-side promptSections (if available) plus the checkpoint
         // summary and post-checkpoint steps rather than showing stale pre-compaction usage.
         const cpIdx = compactionInfo.newestFullCheckpoint.stepIndex;
-        const postCompactionSteps = attributeSteps(rawSteps, cpIdx - 1);
+        const postCompactionSteps = attributeSteps(rawSteps, cpIdx - 1, Number.POSITIVE_INFINITY, stepIndexOffset);
         const fixedCategories = new Set<ContextCategoryKey>(['system', 'rules_skills', 'plugins_mcp', 'subagents', 'tools']);
 
         if (hasPromptSections && latestSectionsGm) {
@@ -1600,6 +1828,7 @@ export function parseContextBreakdown(input: ContextBreakdownInput): ContextBrea
         largestItems,
         stepCount,
         hasPromptSections,
+        recommendedBranchPeakStepCount,
     };
 }
 

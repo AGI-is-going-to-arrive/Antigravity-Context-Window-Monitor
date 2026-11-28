@@ -1,11 +1,24 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { tBi } from './i18n';
+import { t, tBi, tHtml } from './i18n-core';
 import { ContextUsage, TrajectorySummary, getModelDisplayName, normalizeUri } from './tracker';
-import { esc, tBiHtml } from './webview-helpers';
+import { esc, richTipAttrs, tBiHtml, toSafeTipKey } from './webview-helpers';
 import type { GMSummary, GMConversationData } from './gm-tracker';
 import { ICON } from './webview-icons';
+import type { CurrencyInput } from './core/currency';
+import type { SwarmMemberNode, SwarmTopologySnapshot } from './core/swarm-registry';
+import { renderSwarmRecordedCost, renderSwarmMemberItemHtml, type SwarmMemberLiveRow, type SwarmOverviewDisplayData } from './webview-overview-tab';
+
+export interface ChatHistoryRenderOptions {
+    activeCascadeId?: string;
+    swarmTopology?: SwarmTopologySnapshot | null;
+    swarmOverview?: SwarmOverviewDisplayData | null;
+    inspectedMemberId?: string | null;
+    lockedRootId?: string | null;
+    displayCurrency?: CurrencyInput;
+    privacyMasked?: boolean;
+}
 
 interface HistoryGMStats {
     calls: number;
@@ -53,19 +66,147 @@ function getAntigravityRoot(): string {
     return path.join(os.homedir(), '.gemini', 'antigravity');
 }
 
-function exists(targetPath: string): boolean {
-    try {
-        fs.accessSync(targetPath);
-        return true;
-    } catch {
-        return false;
-    }
+interface PathExistenceCacheEntry {
+    exists: boolean;
+    checkedAtMs: number;
 }
 
-function fileUriToPath(uri: string): string {
+const DEFAULT_EXISTENCE_CACHE_TTL_MS = 30_000;
+const MAX_EXISTENCE_CACHE_ENTRIES = 5_000;
+const PREWARM_CONCURRENCY = 16;
+
+let existenceCacheTtlMs = DEFAULT_EXISTENCE_CACHE_TTL_MS;
+const pathExistenceCache = new Map<string, PathExistenceCacheEntry>();
+const pathExistenceInFlight = new Map<string, Promise<boolean>>();
+
+function setExistenceCacheEntry(targetPath: string, existsFlag: boolean, checkedAtMs: number): void {
+    if (pathExistenceCache.has(targetPath)) {
+        pathExistenceCache.delete(targetPath);
+    } else if (pathExistenceCache.size >= MAX_EXISTENCE_CACHE_ENTRIES) {
+        const oldestKey = pathExistenceCache.keys().next().value;
+        if (oldestKey !== undefined) {
+            pathExistenceCache.delete(oldestKey);
+        }
+    }
+    pathExistenceCache.set(targetPath, { exists: existsFlag, checkedAtMs });
+}
+
+function probePathExistenceAsync(targetPath: string, nowFn: () => number = Date.now): Promise<boolean> {
+    const existingFlight = pathExistenceInFlight.get(targetPath);
+    if (existingFlight) {
+        return existingFlight;
+    }
+    const promise = fs.promises.access(targetPath)
+        .then(() => {
+            setExistenceCacheEntry(targetPath, true, nowFn());
+            return true;
+        })
+        .catch(() => {
+            setExistenceCacheEntry(targetPath, false, nowFn());
+            return false;
+        })
+        .finally(() => {
+            pathExistenceInFlight.delete(targetPath);
+        });
+    pathExistenceInFlight.set(targetPath, promise);
+    return promise;
+}
+
+/**
+ * Non-blocking TTL cache lookup for local session artifacts during rendering.
+ * Never performs synchronous `fs.accessSync` on the render thread; triggers an
+ * asynchronous background refresh on cache miss or TTL expiry.
+ */
+function existsCachedNonBlocking(targetPath: string, nowMs = Date.now()): boolean {
+    const cached = pathExistenceCache.get(targetPath);
+    if (cached && (nowMs - cached.checkedAtMs) <= existenceCacheTtlMs) {
+        return cached.exists;
+    }
+    void probePathExistenceAsync(targetPath);
+    return cached ? cached.exists : false;
+}
+
+/**
+ * Pre-warm the async existence cache for all conversation artifacts (`.pb`, `brain/`, `browser_recordings/`)
+ * before rendering the Sessions / Chat History tab.
+ */
+export async function prewarmChatHistoryExistenceCache(
+    trajectories: readonly Pick<TrajectorySummary, 'cascadeId'>[],
+    options: { antigravityRoot?: string; force?: boolean; nowMs?: number } = {},
+): Promise<void> {
+    if (!trajectories || trajectories.length === 0) { return; }
+    const root = options.antigravityRoot || getAntigravityRoot();
+    const nowMs = typeof options.nowMs === 'number' && Number.isFinite(options.nowMs) ? options.nowMs : Date.now();
+    const force = Boolean(options.force);
+    const pathsToProbe: string[] = [];
+
+    for (const trajectory of trajectories) {
+        if (!trajectory?.cascadeId) { continue; }
+        const candidates = [
+            path.join(root, 'conversations', `${trajectory.cascadeId}.pb`),
+            path.join(root, 'brain', trajectory.cascadeId),
+            path.join(root, 'browser_recordings', trajectory.cascadeId),
+        ];
+        for (const p of candidates) {
+            const cached = pathExistenceCache.get(p);
+            if (force || !cached || (nowMs - cached.checkedAtMs) > existenceCacheTtlMs) {
+                pathsToProbe.push(p);
+            }
+        }
+    }
+
+    if (pathsToProbe.length === 0) { return; }
+
+    let cursor = 0;
+    const workerCount = Math.min(PREWARM_CONCURRENCY, pathsToProbe.length);
+    const workers: Promise<void>[] = [];
+    for (let i = 0; i < workerCount; i++) {
+        workers.push((async () => {
+            while (cursor < pathsToProbe.length) {
+                const idx = cursor++;
+                await probePathExistenceAsync(pathsToProbe[idx], () => nowMs);
+            }
+        })());
+    }
+    await Promise.all(workers);
+}
+
+/** Clear all cached local artifact existence entries (for tests or manual refresh). */
+export function clearChatHistoryExistenceCache(): void {
+    pathExistenceCache.clear();
+}
+
+/** Override cache TTL in ms (clamped to >= 0; defaults to 30_000ms). */
+export function setChatHistoryExistenceCacheTtlMs(ttlMs: number): void {
+    existenceCacheTtlMs = Number.isFinite(ttlMs) && ttlMs >= 0 ? Math.floor(ttlMs) : DEFAULT_EXISTENCE_CACHE_TTL_MS;
+}
+
+/** Inspect cache diagnostics without mutating state. */
+export function getChatHistoryExistenceCacheStats(): { size: number; inFlight: number; ttlMs: number } {
+    return {
+        size: pathExistenceCache.size,
+        inFlight: pathExistenceInFlight.size,
+        ttlMs: existenceCacheTtlMs,
+    };
+}
+
+export function fileUriToPath(uri: string): string {
     if (!uri) { return ''; }
     if (uri.startsWith('file:///')) {
-        const raw = decodeURIComponent(uri.replace('file:///', ''));
+        const rawEncoded = uri.slice('file:///'.length);
+        let raw = rawEncoded;
+        try {
+            raw = decodeURIComponent(rawEncoded);
+        } catch {
+            // Malformed percent-encoding (e.g. '%ZZ' or bare '%'): decode valid segments independently.
+            raw = rawEncoded.split('/').map((segment) => {
+                try {
+                    return decodeURIComponent(segment);
+                } catch {
+                    return segment;
+                }
+            }).join('/');
+        }
         return process.platform === 'win32'
             ? raw.replace(/\//g, path.sep)
             : '/' + raw;
@@ -119,8 +260,9 @@ function buildEntries(
     gmSummary: GMSummary | null,
     gmConversations: Record<string, GMConversationData> | undefined,
     currentWorkspaceUri?: string,
+    antigravityRootOverride?: string,
 ): HistoryEntry[] {
-    const antigravityRoot = getAntigravityRoot();
+    const antigravityRoot = antigravityRootOverride || getAntigravityRoot();
     const normalizedCurrentWorkspace = currentWorkspaceUri ? normalizeUri(currentWorkspaceUri) : '';
     const currentRepoName = currentUsage?.repositoryName || '';
 
@@ -157,9 +299,9 @@ function buildEntries(
             isCurrentSession: currentUsage?.cascadeId === trajectory.cascadeId,
             isCurrentWorkspace: !!normalizedCurrentWorkspace && normalizedWorkspace === normalizedCurrentWorkspace,
             isCurrentRepo: !!currentRepoName && trajectory.repositoryName === currentRepoName,
-            hasPb: exists(pbPath),
-            hasBrain: exists(brainDir),
-            hasRecording: exists(recordingDir),
+            hasPb: existsCachedNonBlocking(pbPath),
+            hasBrain: existsCachedNonBlocking(brainDir),
+            hasRecording: existsCachedNonBlocking(recordingDir),
             gmCalls: gmStats.calls,
             gmCredits: gmStats.credits,
             latestGMModel: gmStats.latestModel,
@@ -206,23 +348,6 @@ const IC = {
     clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>',
 };
 
-// ── Local Rich-Tip Attribute Helper (frozen #acmRichTipPopover contract) ──
-function richTipAttrs(key: string, title: string, body: string, meta?: string): string {
-    const parts = [
-        `data-popover-key="${esc(key)}"`,
-        `data-tip-title="${esc(title)}"`,
-        `data-tip-body="${esc(body)}"`,
-    ];
-    if (meta) {
-        parts.push(`data-tip-meta="${esc(meta)}"`);
-    }
-    return parts.join(' ');
-}
-
-function toSafeTipKey(raw: string): string {
-    return raw.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '') || 'item';
-}
-
 // ── Localized status badge helper ──
 function renderStatusBadgeLabel(status: string): string {
     switch ((status || 'UNKNOWN').toUpperCase()) {
@@ -240,75 +365,33 @@ function renderStatusBadgeLabel(status: string): string {
     }
 }
 
+const STATUS_TIP_TABLE: Record<string, [string, string, string, string, string?, string?]> = {
+    RUNNING: ['Running', '运行中', 'Actively generating or running tools.', '当前正在生成回复或执行工具。'],
+    FINISHED: ['Finished', '已完成', 'Conversation run ended.', '本次对话流程已结束。', 'Contrast with Idle', '区别于「空闲」'],
+    IDLE: ['Idle', '空闲', 'Session is open and ready for your next message.', '会话保持打开，正等待你的下一条消息。', 'Contrast with Finished', '区别于「已完成」'],
+    CANCELLED: ['Cancelled', '已取消', 'Latest run stopped before finishing.', '最近执行在完成前已取消。'],
+    CANCELED: ['Cancelled', '已取消', 'Latest run stopped before finishing.', '最近执行在完成前已取消。'],
+    FAILED: ['Failed', '失败', 'Latest run exited with an error.', '最近执行因异常终止。'],
+    ERROR: ['Failed', '失败', 'Latest run exited with an error.', '最近执行因异常终止。'],
+    PENDING: ['Pending', '等待中', 'Queued to start execution.', '正在排队等待执行。'],
+    QUEUED: ['Pending', '等待中', 'Queued to start execution.', '正在排队等待执行。'],
+};
+
 function getStatusBadgeTip(status: string): { title: string; body: string; meta: string } {
-    switch ((status || 'UNKNOWN').toUpperCase()) {
-        case 'RUNNING':
-            return {
-                title: tBi('Running', '运行中'),
-                body: tBi(
-                    'The agent is actively generating responses or running tools in this session.',
-                    '当前会话正在积极生成回复或执行工具步骤。',
-                ),
-                meta: tBi('Live session status reported by Antigravity local service', '来自 Antigravity 本地服务的实时会话状态'),
-            };
-        case 'FINISHED':
-            return {
-                title: tBi('Finished', '已完成'),
-                body: tBi(
-                    'This conversation run has ended and is no longer awaiting immediate turn continuation.',
-                    '本次对话流程已结束，不再等待即时轮次续接。',
-                ),
-                meta: tBi('Contrast with Idle (open and waiting for your next prompt)', '区别于「空闲」（会话仍保持打开、等待你的下一条输入）'),
-            };
-        case 'IDLE':
-            return {
-                title: tBi('Idle', '空闲'),
-                body: tBi(
-                    'The session is open and paused between turns, ready for your next message.',
-                    '会话仍处于打开状态，正等待你的下一条消息。',
-                ),
-                meta: tBi('Contrast with Finished (completed conversation run)', '区别于「已完成」（已结束的对话流程）'),
-            };
-        case 'CANCELLED':
-        case 'CANCELED':
-            return {
-                title: tBi('Cancelled', '已取消'),
-                body: tBi(
-                    'The latest run in this session was stopped before finishing.',
-                    '该会话最近一次执行在完成前被中断或取消。',
-                ),
-                meta: tBi('Reported session status', '本地服务上报状态'),
-            };
-        case 'FAILED':
-        case 'ERROR':
-            return {
-                title: tBi('Failed', '失败'),
-                body: tBi(
-                    'The latest run exited with an error.',
-                    '该会话最近一次执行因异常而终止。',
-                ),
-                meta: tBi('Check GM Data Error Details for exact status codes', '可在 GM 数据页的错误详情中查看具体状态码'),
-            };
-        case 'PENDING':
-        case 'QUEUED':
-            return {
-                title: tBi('Pending', '等待中'),
-                body: tBi(
-                    'This session is queued and waiting to start execution.',
-                    '该会话正在排队等待开始执行。',
-                ),
-                meta: tBi('Reported session status', '本地服务上报状态'),
-            };
-        default:
-            return {
-                title: tBi('Unknown Status', '未知状态'),
-                body: tBi(
-                    'The local service has not reported a recognized run state for this session.',
-                    '本地服务暂未上报该会话的明确运行状态。',
-                ),
-                meta: tBi(`Raw status: ${status || 'UNKNOWN'}`, `原始状态：${status || 'UNKNOWN'}`),
-            };
+    const key = (status || 'UNKNOWN').toUpperCase();
+    const row = STATUS_TIP_TABLE[key];
+    if (row) {
+        return {
+            title: tBi(row[0], row[1]),
+            body: tBi(row[2], row[3]),
+            meta: row[4] ? tBi(row[4], row[5]!) : tBi('Local service status', '本地服务状态'),
+        };
     }
+    return {
+        title: tBi('Unknown Status', '未知状态'),
+        body: tBi('Unrecognized run state.', '暂未上报明确状态。'),
+        meta: key,
+    };
 }
 
 // ── Compact date formatting ──
@@ -714,22 +797,119 @@ function renderGroup(group: HistoryGroup, index: number, rowOffset: number): str
         </details>`;
 }
 
+function renderSwarmHierarchyTree(trajectories: readonly TrajectorySummary[], options?: ChatHistoryRenderOptions): string {
+    const topo = options?.swarmTopology;
+    const overview = options?.swarmOverview;
+    if (!topo && (!overview || overview.members.length === 0)) { return ''; }
+
+    const overviewById = new Map((overview?.members ?? []).map(m => [m.cascadeId, m]));
+    const itemOpts = {
+        displayCurrency: options?.displayCurrency,
+        inspectedMemberId: options?.inspectedMemberId,
+        lockedRootId: options?.lockedRootId,
+        treeMode: true,
+        activeCascadeId: options?.activeCascadeId,
+        readableMemberIds: new Set(trajectories.map(tr => tr.cascadeId)),
+    };
+
+    type TreeGroup = { rootId: string; title: string; activeCount: number; rows: Array<SwarmMemberLiveRow & { depth: number; anomalyTags?: string[] }> };
+    const groups: TreeGroup[] = [];
+
+    if (topo && topo.groupsByRootId.size > 0) {
+        for (const group of topo.groupsByRootId.values()) {
+            const nodes = Array.from(new Set([...group.coordinatorIds, ...group.memberIds]))
+                .map(id => topo.nodesById.get(id)).filter((n): n is SwarmMemberNode => Boolean(n));
+            if (nodes.length === 0) { continue; }
+            const kidsMap = new Map<string, SwarmMemberNode[]>();
+            const roots: SwarmMemberNode[] = [];
+            for (const n of nodes) {
+                if (n.cascadeId === group.rootId) { roots.unshift(n); continue; }
+                const pid = n.directParentId && n.directParentId !== n.cascadeId && topo.nodesById.has(n.directParentId) ? n.directParentId : group.rootId;
+                const list = kidsMap.get(pid) || [];
+                list.push(n);
+                kidsMap.set(pid, list);
+            }
+            if (roots.length === 0) { roots.push(nodes.find(n => n.isCoordinator) || nodes[0]); }
+            const seen = new Set<string>();
+            const rows: TreeGroup['rows'] = [];
+            const visit = (n: SwarmMemberNode, depth: number): void => {
+                if (seen.has(n.cascadeId) || depth > 6) { return; }
+                seen.add(n.cascadeId);
+                const live = overviewById.get(n.cascadeId);
+                rows.push({
+                    cascadeId: n.cascadeId,
+                    memberName: live?.memberName || n.memberName || n.cascadeId.slice(0, 8),
+                    role: live?.role || n.assignedRole,
+                    isCoordinator: Boolean(n.isCoordinator || n.cascadeId === group.rootId),
+                    relationshipKind: n.relationshipKind,
+                    phase: live?.phase || n.phase || (n.killed ? 'KILLED' : ''),
+                    killed: Boolean(n.killed || live?.killed),
+                    assignedModel: live?.assignedModel ?? n.assignedModel ?? null,
+                    measuredModel: live?.measuredModel ?? n.measuredModel ?? null,
+                    contextPct: live?.contextPct ?? n.contextPct ?? null,
+                    directCostUsd: live?.directCostUsd ?? null,
+                    recordedCalls: live?.recordedCalls,
+                    unpricedCalls: live?.unpricedCalls,
+                    lastObservedAt: live?.lastObservedAt ?? n.lastObservedAt ?? null,
+                    isInspected: live?.isInspected,
+                    isLockedRoot: live?.isLockedRoot,
+                    depth,
+                    anomalyTags: [n.isOrphan ? tBi('Orphan', '缺少父成员') : '', n.cycleDetected ? tBi('Cycle', '循环引用') : '', n.hasConflict ? tBi('Conflict', '记录冲突') : '', n.isStaleManifest ? tBi('Stale', '清单已过期') : ''].filter(Boolean),
+                });
+                for (const kid of kidsMap.get(n.cascadeId) || []) { visit(kid, depth + 1); }
+            };
+            for (const r of roots) { visit(r, 0); }
+            for (const n of nodes) { visit(n, 1); }
+            groups.push({ rootId: group.rootId, title: group.title || overview?.title || `${t('swarm.rootLabel')} ${group.rootId.slice(0, 8)}`, activeCount: group.activeMemberIds.length, rows });
+        }
+    } else if (overview && overview.members.length > 0) {
+        groups.push({
+            rootId: overview.rootId,
+            title: overview.title || `${t('swarm.rootLabel')} ${overview.rootId.slice(0, 8)}`,
+            activeCount: overview.members.filter(m => !m.killed).length,
+            rows: overview.members.map(m => ({ ...m, depth: m.isCoordinator ? 0 : (m.relationshipKind === 'nested_helper' ? 2 : 1) })),
+        });
+    }
+
+    if (groups.length === 0) { return ''; }
+    const groupsHtml = groups.map(g => {
+        const isCurrentGroup = g.rows.some(m => m.cascadeId === options?.activeCascadeId || m.cascadeId === options?.inspectedMemberId);
+        const cost = overview?.rootId === g.rootId ? renderSwarmRecordedCost(overview, options?.displayCurrency) : '';
+        const costLine = cost ? `<span class="swarm-group-cost">${cost}</span>` : '';
+        return `<details class="collapsible ses-swarm-group" id="sessions-swarm-group-${esc(g.rootId)}"${isCurrentGroup || groups.length === 1 ? ' open' : ''}><summary><div class="ses-group-head"><div class="ses-group-labels"><span class="ses-group-title swarm-member-name">${esc(g.title)}</span>${costLine}</div><div class="ses-group-chips"><span class="ses-group-chip">${g.rows.length}</span>${g.activeCount > 0 ? `<span class="ses-group-chip is-run">${g.activeCount} ${tBiHtml('active', '活跃')}</span>` : ''}</div></div></summary><ul class="swarm-tree-list">${g.rows.map(r => renderSwarmMemberItemHtml(r, { ...itemOpts, groupId: g.rootId })).join('')}</ul></details>`;
+    }).join('');
+    const partialHtml = (overview?.partialCoverage || (overview && (overview.totalMemberCount ?? overview.members.length) >= 20))
+        ? `<p class="swarm-partial-note" data-swarm-partial-coverage="true">${tHtml('swarm.partialCoverage')}</p>`
+        : '';
+    return `<section class="ses-swarm-tree" id="sessionsSwarmTree" data-swarm-hierarchy="true" aria-labelledby="ses-swarm-heading"><div class="ses-swarm-head"><h3 id="ses-swarm-heading">${tHtml('swarm.liveTracking')}</h3>${partialHtml}</div>${groupsHtml}</section>`;
+}
+
 export function buildChatHistoryTabContent(
     trajectories: TrajectorySummary[],
     currentUsage: ContextUsage | null,
     gmSummary: GMSummary | null,
     gmConversations?: Record<string, GMConversationData>,
     currentWorkspaceUri?: string,
+    antigravityRootOverride?: string,
+    options?: ChatHistoryRenderOptions,
 ): string {
-    const header = `<header class="ed-pane-header"><h2 class="ed-pane-title">${tBiHtml('Sessions', '会话')}</h2></header>`;
+    const header = `<header class="ed-pane-header"><h2 class="ed-pane-title">${tHtml('nav.sessions')}</h2></header>`;
+    const swarmTreeHtml = renderSwarmHierarchyTree(trajectories, options);
     if (!trajectories || trajectories.length === 0) {
-        return `${header}<p class="empty-msg">${tBiHtml(
+        return `${header}${swarmTreeHtml}<p class="empty-msg">${tBiHtml(
             'Waiting for conversation history... the session catalog will appear after the first local service sync.',
             '正在等待对话历史... 首次与本地服务同步后会自动显示会话目录。',
         )}</p>`;
     }
 
-    const entries = buildEntries(trajectories, currentUsage, gmSummary, gmConversations, currentWorkspaceUri);
+    const entries = buildEntries(
+        trajectories,
+        currentUsage,
+        gmSummary,
+        gmConversations,
+        currentWorkspaceUri,
+        antigravityRootOverride,
+    );
     const groups = buildGroups(entries);
     let offset = 0;
     const groupsHtml = groups.map((group, index) => {
@@ -740,6 +920,7 @@ export function buildChatHistoryTabContent(
 
     return `
         ${header}
+        ${swarmTreeHtml}
         ${renderShortcuts(entries, currentUsage)}
         ${renderToolbar()}
         <section class="ses-groups" id="historyGroups">

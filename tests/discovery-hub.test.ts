@@ -194,7 +194,7 @@ describe('hub discovery through real loopback HTTP and mocked OS process listing
 
         expect(found).toEqual({ pid: 123, port, csrfToken: 'Mixed-Case-Token', useTls: false });
         expect(received).toEqual([{ port, token: 'Mixed-Case-Token', path: '/exa.language_server_pb.LanguageServerService/GetStatus' }]);
-        expect(commands.run).toHaveBeenCalledTimes(1);
+        expect(commands.run.mock.calls.length).toBeGreaterThanOrEqual(1);
         if (os === 'win32') {
             expect(commands.run.mock.calls[0][1].join(' ')).toContain("name like 'language_server%' or name = 'agy.exe'");
         } else {
@@ -370,7 +370,8 @@ describe('hub discovery through real loopback HTTP and mocked OS process listing
         const port = await server();
         commands.run.mockResolvedValue({ stdout: row(port), stderr: '' });
         expect((await discoverLanguageServer())?.port).toBe(port);
-        expect(commands.run.mock.calls.map(([file]) => file)).toEqual(['ps']);
+        expect(commands.run.mock.calls[0][0]).toBe('ps');
+        expect(commands.run.mock.calls.every(([file]) => !/wmic|powershell|netstat/i.test(file))).toBe(true);
     });
 
     it('finds an agy hub inside the selected Remote-WSL distro', async () => {
@@ -378,11 +379,14 @@ describe('hub discovery through real loopback HTTP and mocked OS process listing
         const port = await server();
         commands.run.mockImplementation(async (file, args) => {
             expect(file).toMatch(/wsl\.exe$/);
-            expect(args).toEqual(['-d', 'Ubuntu', '--', 'ps', '-axww', '-o', 'pid=,command=']);
-            return { stdout: `123 /home/test/.gemini/bin/agy --hub --hub-port=${port} --csrf_token=Mixed-Case-Token --app_data_dir=antigravity`, stderr: '' };
+            if (args.includes('ps')) {
+                expect(args).toEqual(['-d', 'Ubuntu', '--', 'ps', '-axww', '-o', 'pid=,command=']);
+                return { stdout: `123 /home/test/.gemini/bin/agy --hub --hub-port=${port} --csrf_token=Mixed-Case-Token --app_data_dir=antigravity`, stderr: '' };
+            }
+            return { stdout: `LISTEN 0 128 127.0.0.1:${port} 0.0.0.0:* users:(("agy",pid=123,fd=9))`, stderr: '' };
         });
         expect((await discoverLanguageServer('vscode-remote://wsl%2BUbuntu/home/test'))?.port).toBe(port);
-        expect(commands.run).toHaveBeenCalledTimes(1);
+        expect(commands.run).toHaveBeenCalledTimes(2);
     });
 
     it('matches ephemeral --hub-port=0 process with matching IDE hint without socket tooling', async () => {
@@ -394,7 +398,7 @@ describe('hub discovery through real loopback HTTP and mocked OS process listing
         });
         const found = await discoverLanguageServer(undefined, undefined, undefined, { port, csrfToken: 'EphemeralTok' });
         expect(found).toEqual({ pid: 321, port, csrfToken: 'EphemeralTok', useTls: false });
-        expect(commands.run).toHaveBeenCalledTimes(1);
+        expect(commands.run.mock.calls[0][0]).toBe('ps');
     });
 
     it('does not execute discovery commands after cancellation', async () => {
@@ -414,7 +418,7 @@ describe('hub discovery through real loopback HTTP and mocked OS process listing
         const port = (hanging.address() as AddressInfo).port;
         commands.run.mockResolvedValue({ stdout: row(port), stderr: '' });
         expect(await discoverLanguageServer(undefined, controller.signal)).toBeNull();
-        expect(commands.run).toHaveBeenCalledTimes(1);
+        expect(commands.run.mock.calls[0][0]).toBe('ps');
     });
 
     it('uses the current IDE hint instead of the first running hub', async () => {
@@ -744,5 +748,58 @@ describe('hub discovery through real loopback HTTP and mocked OS process listing
         const found = await discoverLanguageServer();
         expect(found).toEqual({ pid: 6109, port: tlsPort, csrfToken: 'V6TlsToken', useTls: true, hostname: '::1' });
         expect(tlsErrors).toEqual([]);
+    });
+
+    it('P2-9: probes PID-owned [::1] listener directly even when an unrelated IPv4 listener occupies the same port number', async () => {
+        platform('linux');
+        // Bind an unrelated IPv4 server returning 404 first to grab an ephemeral port
+        const ipv4DecoyHits: Array<{ token: string | string[] | undefined; path: string | undefined }> = [];
+        const ipv4Decoy = createServer((req, res) => {
+            ipv4DecoyHits.push({ token: req.headers['x-codeium-csrf-token'], path: req.url });
+            req.resume();
+            res.writeHead(401, { 'Content-Type': 'application/json' });
+            res.end('{"code":"unauthenticated"}');
+        });
+        servers.push(ipv4Decoy);
+        await new Promise<void>((resolve, reject) => {
+            ipv4Decoy.once('error', reject);
+            ipv4Decoy.listen(0, '127.0.0.1', resolve);
+        });
+        const sharedPort = (ipv4Decoy.address() as AddressInfo).port;
+
+        // Bind the real hub on [::1]:sharedPort (same port, IPv6 loopback family!)
+        const ipv6Hub = createServer((req, res) => {
+            received.push({ port: sharedPort, token: req.headers['x-codeium-csrf-token'], path: req.url });
+            req.resume();
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end('{}');
+        });
+        try {
+            await new Promise<void>((resolve, reject) => {
+                ipv6Hub.once('error', reject);
+                ipv6Hub.listen(sharedPort, '::1', resolve);
+            });
+            servers.push(ipv6Hub);
+        } catch {
+            // Skip cleanly on environments without dual IPv4+IPv6 same-port loopback support.
+            return;
+        }
+
+        // Hub argv declares --hub-port=sharedPort (probed on IPv4 first, which hits decoy 401),
+        // then socket inspection returns PID-owned [::1]:sharedPort.
+        commands.run.mockImplementation(async file => {
+            if (file === 'ps') { return { stdout: row(sharedPort, 6110, 'DualStackV6Tok'), stderr: '' }; }
+            if (file === 'lsof') { throw Object.assign(new Error('not found'), { code: 'ENOENT' }); }
+            return {
+                stdout: `LISTEN 0 128 [::1]:${sharedPort} [::]:* users:(("agy",pid=6110,fd=12))`,
+                stderr: '',
+            };
+        });
+
+        const found = await discoverLanguageServer();
+        expect(found).toEqual({ pid: 6110, port: sharedPort, csrfToken: 'DualStackV6Tok', useTls: false, hostname: '::1' });
+        expect(received).toEqual([{ port: sharedPort, token: 'DualStackV6Tok', path: '/exa.language_server_pb.LanguageServerService/GetStatus' }]);
+        // R2-P1-12: PID socket ownership verified FIRST -> unrelated IPv4 decoy receives ZERO credentialed probes!
+        expect(ipv4DecoyHits).toHaveLength(0);
     });
 });

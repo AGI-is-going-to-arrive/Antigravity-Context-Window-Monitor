@@ -5,7 +5,19 @@
 //
 // ZERO `vscode` runtime imports — safe in pure Node / Sidecar / unit tests.
 
-import { formatClockTime, getLanguage, tBi } from './i18n-core';
+import {
+    detectHostLocaleLanguage,
+    formatClockTime,
+    getLanguage,
+    getLanguagePreference,
+    getRuntimeLocaleSources,
+    resolvePerViewEffectiveLanguage,
+    t,
+    tBi,
+    tHtml,
+    type LanguagePreference,
+    type PrimaryLanguage,
+} from './i18n-core';
 import type { ContextUsage, TrajectorySummary } from './tracker';
 import {
     localizePickerEffortLabel,
@@ -24,12 +36,17 @@ import {
     hasAccountReadyPool,
     type AccountSnapshot,
 } from './activity-panel';
-import type { DailyLedger, LedgerAccountBucket, LedgerSettledEntry } from './daily-ledger';
+import type {
+    DailyLedger,
+    LedgerAccountBucket,
+    LedgerSettledEntry,
+    SwarmGroupAttributionSpec,
+} from './daily-ledger';
 import { buildPricingTabContent, getPricingTabStyles } from './pricing-panel';
 import { PricingStore, type ModelPricing, type OrchestratorPricingMode } from './pricing-store';
 import type { GMConversationData, GMSummary } from './gm-tracker';
 import { ICON } from './webview-icons';
-import { esc, tBiHtml } from './webview-helpers';
+import { esc, richTipAttrs as docRichTipAttrs, tBiHtml } from './webview-helpers';
 import { buildModelsTabContent } from './webview-models-tab';
 import { buildProfileContent } from './webview-profile-tab';
 import {
@@ -37,6 +54,7 @@ import {
     DEFAULT_MONITOR_DOCUMENT_SETTINGS,
     normalizeMonitorDocumentSettings,
     type MonitorDocumentSettings,
+    type MonitorDocumentSettingsInput,
     type PanelHintPreferences,
     type StorageDiagnostics,
     type UpdateStatusView,
@@ -55,13 +73,22 @@ import { getEditorialStyles } from './webview-editorial-styles';
 import {
     buildOverviewTabContent,
     getOverviewStyles,
+    deriveSwarmOverviewFromTopology,
+    type CompactionRecoveryBriefData,
+    type HandoffV2PreviewData,
     type LowQuotaWarningItem,
     type LowQuotaWarningState,
     type MonitorStaleState,
+    type SwarmOverviewDisplayData,
 } from './webview-overview-tab';
+import type { SwarmGroupCostSummary, SwarmTopologySnapshot } from './core/swarm-registry';
+import type { ContextDisplayBasis } from './core/context-display';
+import { projectQuotaDisplay, type QuotaDirectionMode, type QuotaRunwayEstimate, type QuotaWindowMode, type WeeklyQuotaRunwayEstimate } from './quota-runway';
+import type { PromptCacheTtlEvaluation, SpeedMetricMode } from './telemetry-metrics';
 import {
     extractOverviewTelemetry,
     formatCompactTokens,
+    formatQuotaWindowPercent,
     getContextReading,
     resetCountdown,
     resolveActiveOrchestratorRoute,
@@ -71,7 +98,6 @@ import {
 } from './monitor-overview';
 import type { ContextBreakdownSnapshot } from './context-breakdown';
 import type { TurnDiagnosticsSummary } from './turn-diagnostics';
-import type { QuotaRunwayEstimate } from './quota-runway';
 import type { ConversationOption } from './conversation-selector';
 import {
     analyzeUserTurnCacheStates,
@@ -85,17 +111,24 @@ import {
 } from './orchestrator-attribution';
 import { formatCachePercent, formatLatency, formatSpeed } from './telemetry-metrics';
 import {
+    projectForNativeHud,
+    type PublishedMonitorObservation,
+} from './core/context-display';
+import {
     formatCurrencyAmount,
     formatDualCurrencyAmount,
-    normalizeSubscriptionPlanId,
     resolveCurrencyConfig,
     type CurrencyConfig,
     type CurrencyInput,
-    type SubscriptionConfig,
+} from './core/currency';
+import {
+    normalizeSubscriptionPlanId,
     type SubscriptionPlanPresetId,
-} from './cli-usage-scanner';
-import type { AppSettings, LastUpdateCheckRecord } from './durable-state';
-import type { CdpStatus, UpdateCheckResult } from './app/sidecar-types';
+} from './core/pricing-validation';
+import type { SubscriptionConfig } from './cli-usage-scanner';
+import { isUpdateAvailableForVersion, type LastUpdateCheckRecord } from './durable-state';
+import type { AppSettingsWithV118, CdpStatus, UpdateCheckResult } from './app/sidecar-types';
+import type { GlobalRulesStatus } from './global-rules';
 
 export {
     DEFAULT_MONITOR_DOCUMENT_SETTINGS,
@@ -115,14 +148,76 @@ export type {
 
 export type MonitorSurface = 'ide' | 'app-sidecar';
 
+export type CanonicalMainTabId = 'overview' | 'gm' | 'sessions' | 'calendar' | 'models' | 'settings';
+export type CanonicalUtilityViewId = 'about';
+export type CanonicalViewId = CanonicalMainTabId | CanonicalUtilityViewId;
+
+export const CANONICAL_MAIN_TABS: readonly CanonicalMainTabId[] = [
+    'overview',
+    'gm',
+    'sessions',
+    'calendar',
+    'models',
+    'settings',
+];
+
+export interface ResolvedTabRoute {
+    tab: CanonicalViewId;
+    anchor?: string;
+}
+
+/** Complete 18-alias navigation table mapping all historical and canonical IDs to v1.18 views. */
+export const ALL_TAB_ALIASES: Readonly<Record<string, ResolvedTabRoute>> = Object.freeze({
+    overview: { tab: 'overview' },
+    gm: { tab: 'gm' },
+    gmdata: { tab: 'gm' },
+    'gm-data': { tab: 'gm' },
+    activity: { tab: 'gm', anchor: 'slot-activity' },
+    sessions: { tab: 'sessions' },
+    chats: { tab: 'sessions' },
+    'chat-history': { tab: 'sessions' },
+    calendar: { tab: 'calendar' },
+    usage: { tab: 'calendar' },
+    cost: { tab: 'calendar', anchor: 'slot-pricing' },
+    pricing: { tab: 'calendar', anchor: 'slot-pricing' },
+    models: { tab: 'models' },
+    profile: { tab: 'models', anchor: 'slot-profile' },
+    account: { tab: 'models', anchor: 'slot-profile' },
+    accounts: { tab: 'models', anchor: 'slot-profile' },
+    settings: { tab: 'settings' },
+    about: { tab: 'about' },
+});
+
+export function resolveTabAlias(raw: string | null | undefined): ResolvedTabRoute | null {
+    if (typeof raw !== 'string') { return null; }
+    const norm = raw.trim().toLowerCase().replace(/^#(?:tab-)?/, '');
+    if (!norm) { return null; }
+    if (norm === 'updates' || norm === 'aboutupdatessection' || norm === 'updatessettingscard') {
+        return { tab: 'settings', anchor: 'updatesSettingsCard' };
+    }
+    if (norm === 'settings-cdp-card' || norm === 'appoverlayscard') {
+        return { tab: 'settings', anchor: 'settings-cdp-card' };
+    }
+    if (norm === 'globalrulescard' || norm === 'global-rules') {
+        return { tab: 'settings', anchor: 'globalRulesCard' };
+    }
+    return ALL_TAB_ALIASES[norm] ?? null;
+}
+
 export type MonitorTabId =
     | OverviewDestination
+    | CanonicalViewId
     | 'gmdata'
-    | 'pricing'
+    | 'gm-data'
+    | 'activity'
     | 'chats'
-    | 'calendar'
+    | 'chat-history'
+    | 'usage'
+    | 'cost'
+    | 'pricing'
     | 'profile'
-    | 'about';
+    | 'account'
+    | 'accounts';
 
 export interface MonitorDocumentV1175Extras {
     surface?: MonitorSurface;
@@ -142,7 +237,7 @@ export interface MonitorDocumentV1175Extras {
     // v1.17.6 optional extras
     calendarOptions?: CalendarRenderOptions;
     orchestratorPricingMode?: OrchestratorPricingMode;
-    appSettings?: Partial<AppSettings> & { subscriptionPlan?: SubscriptionPlanPresetId };
+    appSettings?: Partial<AppSettingsWithV118>;
     cdpStatus?: CdpStatus | null;
     updateStatus?: UpdateStatusView | UpdateCheckResult | null;
     lowQuotaWarning?: LowQuotaWarningState | null;
@@ -150,6 +245,39 @@ export interface MonitorDocumentV1175Extras {
     watermarks?: ContextDualWatermark | null;
     speedSample?: SpeedSampleEvaluation | null;
     orchestratorSplit?: OrchestratorSplitSummary | null;
+    /** When true (default, fail-closed), redact account & identity markup across tabs and popovers. */
+    privacyMasked?: boolean;
+    /** Opaque account handle for active account controls (replaces plaintext `data-email`). */
+    accountHandle?: string;
+    // v1.18 D9 / D3 / Plan C optional extras (all optional for 100% IDE backward compatibility)
+    observation?: PublishedMonitorObservation | null;
+    inspectedMemberId?: string | null;
+    inspectedMemberLabel?: string | null;
+    lockedRootId?: string | null;
+    lockPendingUnavailable?: boolean;
+    retargetOfferId?: string | null;
+    retargetOfferTitle?: string | null;
+    languagePreference?: LanguagePreference;
+    primaryCompactLang?: PrimaryLanguage;
+    viewportWidthPx?: number | null;
+    nativeHudAutoHideOnOverview?: boolean;
+    swarmOverview?: SwarmOverviewDisplayData | null;
+    swarmTopology?: SwarmTopologySnapshot | null;
+    swarmGroupCost?: SwarmGroupCostSummary | null;
+    handoffPreview?: HandoffV2PreviewData | null;
+    recoveryBrief?: CompactionRecoveryBriefData | null;
+    cacheTtl?: PromptCacheTtlEvaluation | null;
+    promptCacheTtl?: PromptCacheTtlEvaluation | null;
+    weeklyRunways?: Record<string, WeeklyQuotaRunwayEstimate> | readonly WeeklyQuotaRunwayEstimate[];
+    weeklyQuotaRunways?: Record<string, WeeklyQuotaRunwayEstimate>;
+    contextPctBasis?: ContextDisplayBasis;
+    speedMetricMode?: SpeedMetricMode;
+    quotaWindowMode?: QuotaWindowMode;
+    quotaDirectionMode?: QuotaDirectionMode;
+    /** Optional metadata-only Antigravity global rules file snapshot for the Settings tab (`null` hides card). */
+    globalRules?: GlobalRulesStatus | null;
+    /** Optional per-response CSP script nonce (emitted only when caller supplies a nonce compatible with all head/body scripts). */
+    cspNonce?: string;
 }
 
 export interface MonitorDocumentBuildParams extends MonitorDocumentV1175Extras {
@@ -200,7 +328,7 @@ export interface MonitorDocumentBuildParams extends MonitorDocumentV1175Extras {
     isPaused?: boolean;
     initialTab?: MonitorTabId;
     /** Plain document settings (zero `vscode` dependency). */
-    settings?: Partial<MonitorDocumentSettings>;
+    settings?: MonitorDocumentSettingsInput;
     /** Explicit formatted clock string (defaults to `formatClockTime(new Date(now), getLanguage())`). */
     lastUpdatedTime?: string;
     /** Optional deterministic timestamp (ms) for tests. */
@@ -211,7 +339,9 @@ export interface MonitorDocumentBuildParams extends MonitorDocumentV1175Extras {
 
 export interface MonitorTabsPayload {
     overview: string;
+    gm: string;
     gmdata: string;
+    sessions: string;
     chats: string;
     pricing: string;
     models: string;
@@ -239,6 +369,8 @@ export interface MonitorShellParams {
 }
 
 export interface NativeHudBuildInput {
+    quotaWindowMode?: QuotaWindowMode;
+    quotaDirectionMode?: QuotaDirectionMode;
     usage: ContextUsage | null;
     modelConfigs: readonly ModelConfig[];
     quotaSummary?: UserQuotaSummary | null;
@@ -256,6 +388,8 @@ export interface NativeHudBuildInput {
     turnCacheInfo?: UserTurnCacheSummary | null;
     orchestratorSettings?: OrchestratorSettings | null;
     orchestratorPricingMode?: OrchestratorPricingMode;
+    /** v1.18 D9: Single frozen observation projected into Native HUD for 100% surface parity. */
+    observation?: PublishedMonitorObservation | null;
     now?: number;
 }
 
@@ -271,33 +405,62 @@ function buildEocSentinel(): string {
 
 function resolveExtras(params: MonitorDocumentBuildParams): MonitorDocumentV1175Extras {
     const nested = params.extras ?? {};
+    const appS = params.appSettings ?? nested.appSettings;
+    const pick = <K extends keyof MonitorDocumentV1175Extras>(k: K): MonitorDocumentV1175Extras[K] =>
+        (params[k] !== undefined ? params[k] : nested[k]);
     return {
         surface: params.surface ?? nested.surface ?? 'ide',
-        version: params.version ?? nested.version,
-        contextBreakdown: params.contextBreakdown !== undefined ? params.contextBreakdown : nested.contextBreakdown,
-        turnDiagnostics: params.turnDiagnostics !== undefined ? params.turnDiagnostics : nested.turnDiagnostics,
-        quotaRunways: params.quotaRunways ?? nested.quotaRunways,
-        isCustomModelActive: params.isCustomModelActive !== undefined ? params.isCustomModelActive : nested.isCustomModelActive,
-        staleState: params.staleState !== undefined ? params.staleState : nested.staleState,
-        conversationOptions: params.conversationOptions ?? nested.conversationOptions,
-        activeConversationId: params.activeConversationId !== undefined ? params.activeConversationId : nested.activeConversationId,
-        pinnedConversationId: params.pinnedConversationId !== undefined ? params.pinnedConversationId : nested.pinnedConversationId,
-        lockToMainAgent: params.lockToMainAgent !== undefined
-            ? params.lockToMainAgent
-            : (nested.lockToMainAgent ?? params.settings?.lockToMainAgent ?? params.appSettings?.lockToMainAgent ?? false),
-        extraHeadHtml: params.extraHeadHtml ?? nested.extraHeadHtml,
-        extraBodyEndHtml: params.extraBodyEndHtml ?? nested.extraBodyEndHtml,
-        imagesBaseUri: params.imagesBaseUri ?? nested.imagesBaseUri,
-        calendarOptions: params.calendarOptions ?? nested.calendarOptions,
-        orchestratorPricingMode: params.orchestratorPricingMode ?? nested.orchestratorPricingMode,
-        appSettings: params.appSettings ?? nested.appSettings,
-        cdpStatus: params.cdpStatus !== undefined ? params.cdpStatus : nested.cdpStatus,
-        updateStatus: params.updateStatus !== undefined ? params.updateStatus : nested.updateStatus,
-        lowQuotaWarning: params.lowQuotaWarning !== undefined ? params.lowQuotaWarning : nested.lowQuotaWarning,
-        turnCacheInfo: params.turnCacheInfo !== undefined ? params.turnCacheInfo : nested.turnCacheInfo,
-        watermarks: params.watermarks !== undefined ? params.watermarks : nested.watermarks,
-        speedSample: params.speedSample !== undefined ? params.speedSample : nested.speedSample,
-        orchestratorSplit: params.orchestratorSplit !== undefined ? params.orchestratorSplit : nested.orchestratorSplit,
+        version: pick('version'),
+        contextBreakdown: pick('contextBreakdown'),
+        turnDiagnostics: pick('turnDiagnostics'),
+        quotaRunways: pick('quotaRunways'),
+        isCustomModelActive: pick('isCustomModelActive'),
+        staleState: pick('staleState'),
+        conversationOptions: pick('conversationOptions'),
+        activeConversationId: pick('activeConversationId'),
+        pinnedConversationId: pick('pinnedConversationId'),
+        lockToMainAgent: pick('lockToMainAgent') ?? params.settings?.lockToMainAgent ?? appS?.lockToMainAgent ?? false,
+        extraHeadHtml: pick('extraHeadHtml'),
+        extraBodyEndHtml: pick('extraBodyEndHtml'),
+        imagesBaseUri: pick('imagesBaseUri'),
+        calendarOptions: pick('calendarOptions'),
+        orchestratorPricingMode: pick('orchestratorPricingMode'),
+        appSettings: appS,
+        cdpStatus: pick('cdpStatus'),
+        updateStatus: pick('updateStatus'),
+        lowQuotaWarning: pick('lowQuotaWarning'),
+        turnCacheInfo: pick('turnCacheInfo'),
+        watermarks: pick('watermarks'),
+        speedSample: pick('speedSample'),
+        orchestratorSplit: pick('orchestratorSplit'),
+        privacyMasked: pick('privacyMasked') ?? true,
+        accountHandle: pick('accountHandle'),
+        observation: pick('observation'),
+        inspectedMemberId: pick('inspectedMemberId'),
+        inspectedMemberLabel: pick('inspectedMemberLabel'),
+        lockedRootId: pick('lockedRootId'),
+        lockPendingUnavailable: pick('lockPendingUnavailable'),
+        retargetOfferId: pick('retargetOfferId'),
+        retargetOfferTitle: pick('retargetOfferTitle'),
+        languagePreference: pick('languagePreference') ?? appS?.languagePreference,
+        primaryCompactLang: pick('primaryCompactLang'),
+        viewportWidthPx: pick('viewportWidthPx'),
+        nativeHudAutoHideOnOverview: pick('nativeHudAutoHideOnOverview') ?? appS?.nativeHudAutoHideOnOverview,
+        swarmOverview: pick('swarmOverview'),
+        swarmTopology: pick('swarmTopology'),
+        swarmGroupCost: pick('swarmGroupCost'),
+        handoffPreview: pick('handoffPreview'),
+        recoveryBrief: pick('recoveryBrief'),
+        cacheTtl: pick('cacheTtl') ?? pick('promptCacheTtl'),
+        promptCacheTtl: pick('promptCacheTtl') ?? pick('cacheTtl'),
+        weeklyRunways: pick('weeklyRunways') ?? pick('weeklyQuotaRunways'),
+        weeklyQuotaRunways: pick('weeklyQuotaRunways'),
+        contextPctBasis: pick('contextPctBasis') ?? appS?.contextPctBasis,
+        speedMetricMode: pick('speedMetricMode') ?? appS?.speedMetricMode,
+        quotaWindowMode: pick('quotaWindowMode') ?? appS?.quotaWindowMode,
+        quotaDirectionMode: pick('quotaDirectionMode') ?? appS?.quotaDirectionMode,
+        globalRules: pick('globalRules'),
+        cspNonce: pick('cspNonce'),
     };
 }
 
@@ -307,12 +470,21 @@ function resolveUpdateStatusView(
     currentVersion?: string,
 ): UpdateStatusView | null {
     if (raw) {
+        const latestVer = raw.latestVersion ?? ('releaseInfo' in raw ? raw.releaseInfo?.version : undefined) ?? null;
+        const versionAwareAvailable = currentVersion && latestVer
+            ? isUpdateAvailableForVersion({
+                checkedAt: raw.checkedAt ?? 0,
+                latestVersion: latestVer,
+                hasUpdate: Boolean(raw.hasUpdate || ('updateAvailable' in raw && raw.updateAvailable)),
+                etag: null,
+            }, currentVersion)
+            : Boolean(('updateAvailable' in raw && raw.updateAvailable) || raw.hasUpdate || raw.status === 'update_available');
         return {
             currentVersion: ('currentVersion' in raw && raw.currentVersion) ? raw.currentVersion : currentVersion,
-            latestVersion: raw.latestVersion ?? ('releaseInfo' in raw ? raw.releaseInfo?.version : undefined) ?? null,
-            updateAvailable: Boolean(('updateAvailable' in raw && raw.updateAvailable) || raw.hasUpdate || raw.status === 'update_available'),
-            hasUpdate: Boolean(raw.hasUpdate || ('updateAvailable' in raw && raw.updateAvailable)),
-            status: raw.status,
+            latestVersion: latestVer,
+            updateAvailable: versionAwareAvailable,
+            hasUpdate: versionAwareAvailable,
+            status: raw.status === 'update_available' && !versionAwareAvailable ? 'up_to_date' : raw.status,
             checkedAt: raw.checkedAt ?? null,
             releaseUrl: ('releaseUrl' in raw ? raw.releaseUrl : undefined) ?? ('releaseInfo' in raw ? raw.releaseInfo?.releaseUrl : undefined) ?? null,
             releaseNotesSummary: ('releaseNotesSummary' in raw ? raw.releaseNotesSummary : undefined) ?? ('releaseInfo' in raw ? raw.releaseInfo?.releaseNotesSummary : undefined) ?? null,
@@ -321,14 +493,17 @@ function resolveUpdateStatusView(
         };
     }
     if (fallbackCheck) {
+        const versionAwareAvailable = currentVersion
+            ? isUpdateAvailableForVersion(fallbackCheck, currentVersion)
+            : Boolean(fallbackCheck.hasUpdate);
         return {
             currentVersion,
             latestVersion: fallbackCheck.latestVersion ?? null,
-            updateAvailable: Boolean(fallbackCheck.hasUpdate),
-            hasUpdate: Boolean(fallbackCheck.hasUpdate),
+            updateAvailable: versionAwareAvailable,
+            hasUpdate: versionAwareAvailable,
             status: fallbackCheck.error
                 ? 'error'
-                : (fallbackCheck.hasUpdate ? 'update_available' : 'up_to_date'),
+                : (versionAwareAvailable ? 'update_available' : 'up_to_date'),
             checkedAt: fallbackCheck.checkedAt,
             releaseUrl: fallbackCheck.releaseUrl ?? null,
             releaseNotesSummary: fallbackCheck.releaseNotesSummary ?? null,
@@ -339,24 +514,28 @@ function resolveUpdateStatusView(
 }
 
 function resolveDisplayCurrencyFromSettings(
-    settings: Partial<MonitorDocumentSettings> | undefined,
-    appSettings: (Partial<AppSettings> & { subscriptionPlan?: SubscriptionPlanPresetId }) | undefined,
+    settings: MonitorDocumentSettingsInput | undefined,
+    appSettings: Partial<AppSettingsWithV118> | undefined,
 ): CurrencyConfig {
     const code = appSettings?.displayCurrency ?? settings?.displayCurrency ?? 'USD';
     const customRate = appSettings?.customFxRate !== undefined
         ? appSettings.customFxRate
         : settings?.customFxRate;
+    const customFxCurrency = appSettings?.customFxCurrency !== undefined
+        ? appSettings.customFxCurrency
+        : settings?.customFxCurrency;
     return {
         code,
         ...(typeof customRate === 'number' && Number.isFinite(customRate) && customRate > 0
             ? { customRatePerUsd: customRate }
             : {}),
+        ...(customFxCurrency !== undefined ? { customFxCurrency } : {}),
     };
 }
 
 function resolveSubscriptionFromSettings(
-    settings: Partial<MonitorDocumentSettings> | undefined,
-    appSettings: (Partial<AppSettings> & { subscriptionPlan?: SubscriptionPlanPresetId }) | undefined,
+    settings: MonitorDocumentSettingsInput | undefined,
+    appSettings: Partial<AppSettingsWithV118> | undefined,
     currency: CurrencyConfig,
 ): SubscriptionConfig | null {
     const fee = appSettings?.subscriptionMonthlyFee !== undefined
@@ -369,7 +548,7 @@ function resolveSubscriptionFromSettings(
     return {
         planId,
         ...(typeof fee === 'number' && Number.isFinite(fee) && fee > 0 ? { monthlyFee: fee } : {}),
-        feeCurrency,
+        feeCurrency: feeCurrency as SubscriptionConfig['feeCurrency'],
         ...(currency.customRatePerUsd ? { customRatePerUsd: currency.customRatePerUsd } : {}),
     };
 }
@@ -425,23 +604,6 @@ function formatConversationOptionLabel(opt: ConversationOption): string {
     return tags.length > 0 ? `${titlePart} [${tags.join(' · ')}]` : titlePart;
 }
 
-function docRichTipAttrs(opts: {
-    key: string;
-    title?: string;
-    body: string;
-    meta?: string;
-    focusable?: boolean;
-}): string {
-    const parts = [
-        `data-popover-key="${esc(opts.key)}"`,
-        opts.title ? `data-tip-title="${esc(opts.title)}"` : '',
-        `data-tip-body="${esc(opts.body)}"`,
-        opts.meta ? `data-tip-meta="${esc(opts.meta)}"` : '',
-        opts.focusable ? 'tabindex="0"' : '',
-    ].filter(Boolean);
-    return parts.length ? ` ${parts.join(' ')}` : '';
-}
-
 // ─── Native Sidecar Collapsible Ambient HUD (v1.17.6, Zero-CDP) ─────────────
 
 /**
@@ -450,20 +612,43 @@ function docRichTipAttrs(opts: {
  */
 export function buildNativeHudHtml(input: NativeHudBuildInput): string {
     const now = input.now ?? Date.now();
-    const reading = input.usage ? getContextReading(input.usage) : null;
+    const obsProj = input.observation ? projectForNativeHud(input.observation) : null;
+    const legacyReading = input.usage ? getContextReading(input.usage) : null;
+    const reading = obsProj
+        ? {
+            used: obsProj.usedTokens,
+            limit: obsProj.denominatorTokens,
+            percent: obsProj.primaryPct,
+        }
+        : legacyReading;
     const rawPct = reading?.percent ?? null;
-    const clampedPct = rawPct !== null && Number.isFinite(rawPct) ? Math.max(0, Math.min(100, rawPct)) : 0;
+    const clampedPct = obsProj
+        ? obsProj.geometryFillPct
+        : (rawPct !== null && Number.isFinite(rawPct) ? Math.max(0, Math.min(100, rawPct)) : 0);
     const ringCircumference = 2 * Math.PI * 8; // r = 8 -> 50.265
     const ringOffset = ringCircumference * (1 - clampedPct / 100);
-    // Aligned with Overview contextMeterTone (>= 80% danger/attention, >= 65% warn)
-    const ringTone = rawPct === null
-        ? ' is-muted'
-        : rawPct >= 80
-            ? ' is-danger'
-            : rawPct >= 65
-                ? ' is-warn'
-                : ' is-good';
-    const ctxPctText = rawPct !== null && Number.isFinite(rawPct) ? `${Math.round(rawPct)}%` : '—';
+    // Aligned with Overview & D9 observation healthStatus + compactionWarningActive
+    const ringTone = obsProj
+        ? (obsProj.isIncomplete
+            ? ' is-muted'
+            : (obsProj.healthStatus === 'overflow'
+                || obsProj.healthStatus === 'high_pressure'
+                || obsProj.compactionWarningLevel === 'critical'
+                || obsProj.compactionWarningLevel === 'overflow')
+                ? ' is-danger'
+                : (obsProj.healthStatus === 'elevated' || obsProj.compactionWarningLevel === 'elevated')
+                    ? ' is-warn'
+                    : ' is-good')
+        : (rawPct === null
+            ? ' is-muted'
+            : rawPct >= 80
+                ? ' is-danger'
+                : rawPct >= 65
+                    ? ' is-warn'
+                    : ' is-good');
+    const ctxPctText = obsProj
+        ? obsProj.primaryPctText
+        : (rawPct !== null && Number.isFinite(rawPct) ? `${Math.round(rawPct)}%` : '—');
 
     const watermarks = input.watermarks !== undefined
         ? input.watermarks
@@ -476,244 +661,164 @@ export function buildNativeHudHtml(input: NativeHudBuildInput): string {
             })
             : null);
 
-    const ctxTipLines: string[] = [
-        tBi(
-            'Current conversation context usage relative to the platform auto-compaction ceiling.',
-            '当前会话的上下文占用量（按平台自动压缩上限计算）。',
-        ),
-    ];
     const ctxDetails: string[] = [];
     if (reading && reading.used !== null && reading.limit !== null) {
         ctxDetails.push(`${tBi('Context', '上下文')}: ${formatCompactTokens(reading.used)} / ${formatCompactTokens(reading.limit)}`);
     }
     if (watermarks?.hasDistinctPhysicalWindow) {
-        ctxDetails.push(`${tBi('Native Ceiling', '原生窗口上限')}: ${formatCompactTokens(watermarks.physicalContextWindow)}`);
+        ctxDetails.push(`${t('context.basisNative')}: ${formatCompactTokens(watermarks.physicalContextWindow)}`);
     }
     if (watermarks?.showLongContextMarker) {
-        ctxDetails.push(watermarks.exceedsLongContextTier
-            ? tBi('> 200k long-context tier', '已超 200k 长上下文阶梯')
-            : tBi('Below 200k tier', '低于 200k 阶梯'));
-    }
-    if (ctxDetails.length > 0) {
-        ctxTipLines.push(ctxDetails.join(' · '));
+        ctxDetails.push(watermarks.exceedsLongContextTier ? tBi('> 200k tier', '已超 200k 阶梯') : tBi('Below 200k tier', '低于 200k 阶梯'));
     }
     const ctxTipAttr = docRichTipAttrs({
         key: 'hud:chip:context',
-        title: tBi('Context Window Usage', '上下文窗口占用'),
-        body: ctxTipLines.join('\n'),
-        meta: tBi(
-            'Color thresholds: <65% normal · ≥65% warning · ≥80% danger (aligned with Overview).',
-            '警戒阈值：<65% 正常 · ≥65% 预警 · ≥80% 高危（与总览口径一致）。',
-        ),
+        title: tBi('Context Usage', '上下文占用'),
+        body: ctxDetails.join(' · ') || tBi('Context vs auto-compaction ceiling.', '按自动压缩上限计算的上下文占用。'),
+        meta: tBi('<65% normal · ≥65% warn · ≥80% danger', '<65% 正常 · ≥65% 预警 · ≥80% 高危'),
         focusable: true,
     });
 
     // Telemetry (Speed with Short sample guard, TTFT, Cache Hit %)
-    const activeCascadeId = input.activeCascadeId || input.usage?.cascadeId;
-    const telemetry = extractOverviewTelemetry(input.gmSummary, activeCascadeId, input.customPricing, input.orchestratorPricingMode);
+    const activeCascadeId = obsProj ? obsProj.subjectCascadeId : (input.activeCascadeId ?? input.usage?.cascadeId);
+    const telemetry = obsProj && (!obsProj.subjectCascadeId || obsProj.isZeroStepFresh)
+        ? null
+        : extractOverviewTelemetry(input.gmSummary, activeCascadeId ?? undefined, input.customPricing, input.orchestratorPricingMode);
     const primary = telemetry?.primary ?? null;
-    const speedSample = input.speedSample
-        ?? primary?.latestSpeedSample
-        ?? (primary?.latestCall
-            ? evaluateSpeedSample({
-                outputTokens: primary.latestCall.outputTokens,
-                streamingSeconds: primary.latestCall.streamingSeconds,
-                ttftSeconds: primary.latestCall.ttftSeconds,
-            })
-            : null);
+    const speedSample = obsProj?.isZeroStepFresh
+        ? null
+        : (input.speedSample
+            ?? primary?.latestSpeedSample
+            ?? (primary?.latestCall
+                ? evaluateSpeedSample({
+                    outputTokens: primary.latestCall.outputTokens,
+                    streamingSeconds: primary.latestCall.streamingSeconds,
+                    ttftSeconds: primary.latestCall.ttftSeconds,
+                })
+                : null));
 
     let speedValHtml = '—';
     let speedChipCls = ' is-muted';
     let speedAttr = '';
     let speedTip = '';
-    let speedTipBody = tBi(
-        'Model token generation speed during streaming output.',
-        '模型流式输出阶段每秒生成的 Token 速度。',
-    );
-    let speedTipMeta = tBi(
-        'Formula: outputTokens / streamingSeconds; shows Short sample when output < 16 tokens or < 0.3s.',
-        '计算口径：输出 Token ÷ 流式耗时；当输出不足 16 tokens 或耗时不足 0.3s 时标记为「短样本」。',
-    );
-    if (speedSample?.isWaitingTtft) {
+    let speedTipBody = tBi('Streaming token speed.', '流式输出速度。');
+    const effectiveSpeedPrimary = obsProj ? obsProj.displaySpeedTps : (telemetry?.speedPrimary ?? null);
+    if (!obsProj && speedSample?.isWaitingTtft) {
         speedValHtml = tBiHtml('Waiting TTFT', '等待首字');
         speedAttr = ' data-hud-speed="waiting-ttft"';
-        speedTip = tBi('Waiting for first token', '正在等待模型首字输出');
-        speedTipBody = tBi(
-            'Request is active and waiting for the model to emit its first token.',
-            '请求已发出，正在等待模型输出第一个 Token。',
-        );
-    } else if (speedSample?.isShortSample) {
+        speedTip = tBi('Waiting for first token', '等待首字输出');
+        speedTipBody = speedTip;
+    } else if (!obsProj && speedSample?.isShortSample) {
         speedValHtml = tBiHtml('Short sample', '短样本');
         speedAttr = ' data-hud-speed="short-sample"';
         speedTip = speedSample.rawSpeed !== null
-            ? `${tBi('Raw (short sample)', '原始值（短样本）')}: ${formatSpeed(speedSample.rawSpeed)}`
-            : tBi('Short sample (< 16 tokens or < 0.3s)', '短样本（输出不足 16 tokens 或耗时不足 0.3s）');
-        speedTipBody = `${tBi(
-            'Latest reply was too brief to measure throughput reliably.',
-            '最近一次回复过短，速度波动较大，暂不直接展示瞬时极值。',
-        )}\n${speedTip}`;
-    } else if (telemetry?.speedPrimary !== null && telemetry?.speedPrimary !== undefined) {
-        speedValHtml = esc(formatSpeed(telemetry.speedPrimary));
+            ? `${tBi('Raw', '原始')}: ${formatSpeed(speedSample.rawSpeed)}`
+            : tBi('<16 tokens or <0.3s', '<16 tokens 或 <0.3s');
+        speedTipBody = speedTip;
+    } else if (effectiveSpeedPrimary !== null && effectiveSpeedPrimary !== undefined) {
+        speedValHtml = esc(formatSpeed(effectiveSpeedPrimary));
         speedChipCls = '';
-        speedTip = primary?.weightedGenTokPerSec !== null && primary?.weightedGenTokPerSec !== undefined
-            ? `${tBi('Weighted Avg', '加权平均')}: ${formatSpeed(primary.weightedGenTokPerSec)}`
-            : '';
-        if (speedTip) {
-            speedTipBody = `${speedTipBody}\n${speedTip}`;
-        }
+        speedTip = primary?.weightedGenTokPerSec != null ? `${tBi('Avg', '均值')}: ${formatSpeed(primary.weightedGenTokPerSec)}` : '';
+        if (speedTip) { speedTipBody = `${speedTipBody}\n${speedTip}`; }
     }
     const speedTipAttr = docRichTipAttrs({
         key: 'hud:chip:speed',
-        title: tBi('Generation Speed', '生成速度'),
+        title: obsProj?.speedMode === 'e2e' ? t('speed.e2eModelCall') : t('speed.decode'),
         body: speedTipBody,
-        meta: speedTipMeta,
+        meta: obsProj?.speedMode === 'e2e' ? 'outputTokens / (TTFT + streamingSeconds)' : 'outputTokens / streamingSeconds',
         focusable: true,
     });
 
     const ttftVal = telemetry ? formatLatency(telemetry.ttftPrimary) : '—';
     const ttftCls = ttftVal === '—' ? ' is-muted' : '';
-    const ttftDetails: string[] = [];
-    if (primary?.avgTtftSeconds !== null && primary?.avgTtftSeconds !== undefined) {
-        ttftDetails.push(`${tBi('Avg', '均值')}: ${formatLatency(primary.avgTtftSeconds)}`);
-    }
-    if (primary?.medianTtftSeconds !== null && primary?.medianTtftSeconds !== undefined) {
-        ttftDetails.push(`p50: ${formatLatency(primary.medianTtftSeconds)}`);
-    }
-    if (primary?.cachedAvgTtftSeconds !== null && primary?.cachedAvgTtftSeconds !== undefined) {
-        ttftDetails.push(`${tBi('Cached', '命中缓存')}: ${formatLatency(primary.cachedAvgTtftSeconds)}`);
-    }
-    if (primary?.uncachedAvgTtftSeconds !== null && primary?.uncachedAvgTtftSeconds !== undefined) {
-        ttftDetails.push(`${tBi('Uncached', '未命中')}: ${formatLatency(primary.uncachedAvgTtftSeconds)}`);
-    }
-    const ttftTipBody = [
-        tBi(
-            'Time To First Token: how long you wait from sending a request until the first token appears.',
-            '首字延迟（TTFT）：从发送请求到模型吐出第一个字所等待的时间。',
-        ),
-        ...(ttftDetails.length ? [ttftDetails.join(' · ')] : []),
-    ].join('\n');
+    const ttftDetails = [
+        primary?.avgTtftSeconds != null ? `${tBi('Avg', '均值')}: ${formatLatency(primary.avgTtftSeconds)}` : '',
+        primary?.medianTtftSeconds != null ? `p50: ${formatLatency(primary.medianTtftSeconds)}` : '',
+        primary?.cachedAvgTtftSeconds != null ? `${tBi('Cached', '缓存')}: ${formatLatency(primary.cachedAvgTtftSeconds)}` : '',
+        primary?.uncachedAvgTtftSeconds != null ? `${tBi('Cache Miss', '缓存未命中')}: ${formatLatency(primary.uncachedAvgTtftSeconds)}` : '',
+    ].filter(Boolean);
     const ttftTipAttr = docRichTipAttrs({
         key: 'hud:chip:ttft',
-        title: tBi('TTFT (Time To First Token)', '首字延迟 (TTFT)'),
-        body: ttftTipBody,
-        meta: tBi(
-            'Includes prompt prefill & queue time; warm prompt cache typically cuts TTFT significantly.',
-            '包含提示词预填充与排队耗时；命中热缓存通常可大幅缩短首字等待。',
-        ),
+        title: t('speed.ttft'),
+        body: ttftDetails.join(' · ') || tBi('Time to first token.', '等待首个输出 Token 耗时。'),
         focusable: true,
     });
 
     const cacheVal = primary ? formatCachePercent(primary.tokenCacheHitRate) : '—';
-    const cacheCls = primary?.tokenCacheHitRate !== null && primary?.tokenCacheHitRate !== undefined && primary.tokenCacheHitRate > 0
-        ? ' is-good'
-        : ' is-muted';
-    const cacheBodyLines = [
-        tBi(
-            'Share of prompt tokens reused from server-side prompt cache instead of being recomputed.',
-            '本次会话中直接命中服务端提示词缓存、免于重复计算的输入 Token 占比。',
-        ),
-    ];
-    if (primary && primary.totalPromptTokens > 0) {
-        cacheBodyLines.push(
-            `${formatCompactTokens(primary.totalCacheReadTokens)} / ${formatCompactTokens(primary.totalPromptTokens)} tokens · ${primary.cachedCallCount}/${primary.totalCalls} ${tBi('calls', '次调用')}`,
-        );
-    }
+    const cacheCls = primary?.tokenCacheHitRate != null && primary.tokenCacheHitRate > 0 ? ' is-good' : ' is-muted';
     const cacheTipAttr = docRichTipAttrs({
         key: 'hud:chip:cache',
-        title: tBi('Prompt Cache Hit Rate', '提示词缓存命中率'),
-        body: cacheBodyLines.join('\n'),
-        meta: tBi(
-            'Real server-side Prompt Cache reuse: Warm ≥70% (faster TTFT) · Partial 10%–70% (after edits/compaction) · Cold <10% (first turn / >5m idle / model switch).',
-            '真实服务端提示词缓存复用：热缓存 ≥70%（首字更快）· 部分命中 10%–70%（改动/压缩）· 冷启动 <10%（首轮 / 闲置超 5 分钟 / 切换模型）。',
-        ),
+        title: tBi('Prompt Cache Hit', '缓存命中率'),
+        body: primary && primary.totalPromptTokens > 0
+            ? `${formatCompactTokens(primary.totalCacheReadTokens)} / ${formatCompactTokens(primary.totalPromptTokens)} tokens · ${primary.cachedCallCount}/${primary.totalCalls}`
+            : tBi('Server-side prompt cache reuse.', '服务端提示词缓存复用。'),
         focusable: true,
     });
 
     // Cost (selected display currency)
-    const primaryCostUsd = typeof input.sessionCostUsd === 'number' && Number.isFinite(input.sessionCostUsd) && input.sessionCostUsd >= 0
-        ? input.sessionCostUsd
-        : (typeof input.todayCostUsd === 'number' && Number.isFinite(input.todayCostUsd) && input.todayCostUsd >= 0
-            ? input.todayCostUsd
+    const obsSessionCostUsd = obsProj
+        ? obsProj.sessionCostUsd
+        : (typeof input.sessionCostUsd === 'number' && Number.isFinite(input.sessionCostUsd) && input.sessionCostUsd >= 0
+            ? input.sessionCostUsd
             : null);
+    const primaryCostUsd = typeof obsSessionCostUsd === 'number' && Number.isFinite(obsSessionCostUsd) && obsSessionCostUsd >= 0
+        ? obsSessionCostUsd
+        : (obsProj
+            ? null
+            : (typeof input.todayCostUsd === 'number' && Number.isFinite(input.todayCostUsd) && input.todayCostUsd >= 0
+                ? input.todayCostUsd
+                : null));
     const { preset: currencyPreset } = resolveCurrencyConfig(input.displayCurrency);
-    const costDisplay = primaryCostUsd !== null
-        ? formatCurrencyAmount(primaryCostUsd, input.displayCurrency)
-        : '—';
+    const costDisplay = primaryCostUsd !== null ? formatCurrencyAmount(primaryCostUsd, input.displayCurrency) : '—';
     const costCls = costDisplay === '—' ? ' is-muted' : '';
     const costRefLine = primaryCostUsd !== null
-        ? (currencyPreset.code !== 'USD'
-            ? formatDualCurrencyAmount(primaryCostUsd, input.displayCurrency)
-            : `${tBi('Est. Cost', '参考费用')}: ${costDisplay}`)
-        : tBi('No priced calls recorded yet.', '暂无可计价的模型调用记录。');
+        ? (currencyPreset.code !== 'USD' ? formatDualCurrencyAmount(primaryCostUsd, input.displayCurrency) : costDisplay)
+        : tBi('No priced calls yet.', '暂无计价调用。');
     const costTipAttr = docRichTipAttrs({
         key: 'hud:chip:cost',
         title: tBi('API Reference Cost', 'API 参考费用'),
-        body: `${tBi(
-            'Estimated equivalent API spend for the active session (or today) at public token rates.',
-            '按模型公开单价估算的当前会话（或今日）等价 API 参考费用。',
-        )}\n${costRefLine}`,
-        meta: tBi(
-            'Reference estimate only — not your Google Antigravity subscription bill.',
-            '仅作用量价值参考，不代表实际 Google Antigravity 订阅账单扣费。',
-        ),
+        body: costRefLine,
+        meta: tBi('Reference estimate only.', '仅作参考费用估算。'),
         focusable: true,
     });
 
     // Tightest Quota % + reset tag
     const quotaGroups = selectMonitorQuotaGroups(input.modelConfigs, input.usage?.model, input.quotaSummary);
+    const quotaRows = quotaGroups.map(group => {
+        const fiveHour = group.fiveHourQuota;
+        const weekly = group.weeklyQuota;
+        const quota = projectQuotaDisplay({
+            windowMode: input.quotaWindowMode ?? '5h',
+            directionMode: input.quotaDirectionMode ?? 'remaining',
+            window5h: fiveHour ?? { remainingFraction: group.minimum },
+            window7d: weekly,
+        });
+        const reset = quota.effectiveWindow === '7d' ? weekly?.resetTime : fiveHour?.resetTime ?? group.resetTime;
+        const label = quota.displayPct === null ? '—' : `${tBi(quota.metricLabelEn, quota.metricLabelZh)} ${formatQuotaWindowPercent(quota.displayPct / 100)}`;
+        return { group, quota, reset, label };
+    });
     let tightestQuotaHtml = '—';
     let tightestQuotaCls = ' is-muted';
     let tightestQuotaTip = '';
     if (input.isCustomModelActive) {
         tightestQuotaHtml = tBiHtml('BYOK', '自定义');
         tightestQuotaCls = '';
-        tightestQuotaTip = tBi('Custom / BYOK model isolated from Google quota pools', '自定义 / BYOK 模型不消耗 Google 配额池');
-    } else if (quotaGroups.length > 0) {
-        let bestPct: number | null = null;
-        let bestReset = '';
-        let bestLabel = '';
-        for (const group of quotaGroups) {
-            const candidates: Array<{ frac: number | null | undefined; reset: string | null | undefined }> = [];
-            if (group.fiveHourQuota) {
-                candidates.push({ frac: group.fiveHourQuota.remainingFraction, reset: group.fiveHourQuota.resetTime });
-            }
-            if (group.weeklyQuota) {
-                candidates.push({ frac: group.weeklyQuota.remainingFraction, reset: group.weeklyQuota.resetTime });
-            }
-            if (candidates.length === 0) {
-                candidates.push({ frac: group.minimum, reset: group.resetTime });
-            }
-            for (const c of candidates) {
-                if (typeof c.frac !== 'number' || !Number.isFinite(c.frac) || c.frac < 0 || c.frac > 1) { continue; }
-                const pct = Math.round(c.frac * 100);
-                if (bestPct === null || pct < bestPct) {
-                    bestPct = pct;
-                    bestLabel = group.label;
-                    bestReset = c.reset ? resetCountdown(Date.parse(c.reset), now) : '';
-                }
-            }
-        }
-        if (bestPct !== null) {
-            const resetSuffix = bestReset && !bestReset.includes('unavailable') && !bestReset.includes('暂无')
-                ? ` · ${esc(bestReset)}`
-                : '';
-            tightestQuotaHtml = `${bestPct}%${resetSuffix}`;
-            tightestQuotaCls = bestPct <= 20 ? ' is-danger' : bestPct < 50 ? ' is-warn' : ' is-good';
-            tightestQuotaTip = `${bestLabel}: ${bestPct}%${bestReset ? ` · ${bestReset}` : ''}`;
+        tightestQuotaTip = tBi('Custom / BYOK model isolated', '自定义模型配额独立');
+    } else {
+        const lowest = quotaRows.filter(row => row.quota.remainingPct !== null)
+            .sort((a, b) => a.quota.remainingPct! - b.quota.remainingPct!)[0];
+        if (lowest) {
+            const remaining = lowest.quota.remainingPct!;
+            const reset = lowest.reset ? resetCountdown(Date.parse(lowest.reset), now) : '';
+            tightestQuotaHtml = esc(lowest.label);
+            tightestQuotaCls = remaining <= 20 ? ' is-danger' : remaining < 50 ? ' is-warn' : ' is-good';
+            tightestQuotaTip = `${lowest.group.label}: ${lowest.label}${reset ? ` · ${reset}` : ''}`;
         }
     }
     const quotaTipAttr = docRichTipAttrs({
         key: 'hud:chip:quota',
-        title: tBi('Tightest Quota Window', '最紧俏配额窗口'),
-        body: tightestQuotaTip
-            ? `${tBi(
-                'Lowest remaining allowance across your active shared model quota windows.',
-                '当前各共享模型配额池中剩余比例最低的窗口。',
-            )}\n${tightestQuotaTip}`
-            : tBi('Waiting for shared quota pool telemetry from backend.', '正在等待本地服务上报共享配额池数据。'),
-        meta: input.isCustomModelActive
-            ? tBi('BYOK / custom models do not consume Google quota pools.', '自定义 / BYOK 模型独立计费，不占用 Google 配额池。')
-            : tBi('Color thresholds: >50% healthy · 21–49% warning · ≤20% low quota.', '状态阈值：≥50% 充裕 · 21%–49% 偏紧 · ≤20% 低配额警告。'),
+        title: tBi('Model quota', '模型配额'),
+        body: tightestQuotaTip || tBi('Waiting for quota data.', '等待配额数据。'),
         focusable: true,
     });
 
@@ -767,24 +872,21 @@ export function buildNativeHudHtml(input: NativeHudBuildInput): string {
     const todayCostDisplay = typeof input.todayCostUsd === 'number' && Number.isFinite(input.todayCostUsd) && input.todayCostUsd >= 0
         ? formatCurrencyAmount(input.todayCostUsd, input.displayCurrency)
         : null;
-    const sessionCostDisplay = typeof input.sessionCostUsd === 'number' && Number.isFinite(input.sessionCostUsd) && input.sessionCostUsd >= 0
-        ? formatCurrencyAmount(input.sessionCostUsd, input.displayCurrency)
+    const sessionCostDisplay = typeof obsSessionCostUsd === 'number' && Number.isFinite(obsSessionCostUsd) && obsSessionCostUsd >= 0
+        ? formatCurrencyAmount(obsSessionCostUsd, input.displayCurrency)
         : null;
 
     const quotaSummaryText = input.isCustomModelActive
         ? tBi('Custom model isolated', '自定义模型配额独立')
-        : quotaGroups.length > 0
-            ? quotaGroups
-                .slice(0, 3)
-                .map((g) => {
-                    const frac = g.fiveHourQuota?.remainingFraction ?? g.minimum;
-                    const p = typeof frac === 'number' && Number.isFinite(frac) ? `${Math.round(frac * 100)}%` : '—';
-                    return `${g.label} ${p}`;
-                })
-                .join(' · ')
+        : quotaRows.length > 0
+            ? quotaRows.slice(0, 3).map(row => `${row.group.label} ${row.label}`).join(' · ')
             : '—';
 
-    return `<section class="native-hud-bar" id="nativeHudBar" data-native-hud="true" data-hud-expanded="false" aria-label="${esc(tBi('Ambient telemetry HUD', '顶部紧凑遥测 HUD'))}">
+    const hudObsAttrs = obsProj
+        ? ` data-observation-subject="${esc(obsProj.subjectCascadeId ?? '')}" data-observation-data-rev="${obsProj.dataRevision}" data-observation-pct="${esc(obsProj.primaryPctText)}" data-observation-denom="${obsProj.denominatorTokens ?? ''}" data-observation-basis="${esc(obsProj.actualBasis)}" data-observation-health="${esc(obsProj.healthStatus)}" data-observation-fill="${obsProj.geometryFillPct}" data-compaction-warning="${esc(obsProj.compactionWarningActive ? obsProj.compactionWarningLevel : 'none')}"`
+        : '';
+
+    return `<section class="native-hud-bar" id="nativeHudBar" data-native-hud="true" data-hud-expanded="false"${hudObsAttrs} aria-label="${esc(tBi('Ambient telemetry HUD', '顶部紧凑遥测 HUD'))}">
         <div class="native-hud-strip">
             <div class="native-hud-metrics">
                 <span class="native-hud-chip${ringTone}" data-hud-metric="context"${ctxTipAttr}>
@@ -800,7 +902,7 @@ export function buildNativeHudHtml(input: NativeHudBuildInput): string {
                     <span class="native-hud-chip-val">${speedValHtml}</span>
                 </span>
                 <span class="native-hud-chip${ttftCls}" data-hud-metric="ttft"${ttftTipAttr}>
-                    <span class="native-hud-chip-label">${tBiHtml('TTFT', '首字')}</span>
+                    <span class="native-hud-chip-label">${tHtml('speed.ttft')}</span>
                     <span class="native-hud-chip-val">${esc(ttftVal)}</span>
                 </span>
                 <span class="native-hud-chip${cacheCls}" data-hud-metric="cache"${cacheTipAttr}>
@@ -895,46 +997,30 @@ export function buildMonitorMastheadControlsHtml(extras: MonitorDocumentV1175Ext
         : tBiHtml('Antigravity IDE', 'Antigravity IDE');
 
     const staleBadgeHtml = extras.staleState?.isStale ? (() => {
-        const ts = extras.staleState.lastSuccessAtMs
-            ? ` · ${esc(formatClockTime(new Date(extras.staleState.lastSuccessAtMs), currentLang))}`
-            : '';
-        const errLine = extras.staleState.lastError
-            ? `\n${tBi('Last error', '最近错误')}: ${extras.staleState.lastError}`
-            : '';
+        const ts = extras.staleState.lastSuccessAtMs ? ` · ${esc(formatClockTime(new Date(extras.staleState.lastSuccessAtMs), currentLang))}` : '';
+        const errLine = extras.staleState.lastError ? `\n${extras.staleState.lastError}` : '';
         const staleTipAttrs = docRichTipAttrs({
             key: 'topbar:stale-badge',
             title: tBi('Cached / Stale Data', '缓存数据（待刷新）'),
-            body: `${tBi(
-                'Temporarily unable to reach the local Antigravity service; preserving the last good telemetry snapshot until reconnection succeeds.',
-                '暂时无法连接本地 Antigravity 服务，当前保留上次成功拉取的遥测快照直至重连恢复。',
-            )}${errLine}`,
-            meta: tBi('Polling retries automatically in the background.', '后台会自动重试连接，无需手动重启。'),
+            body: `${tBi('Local service unreachable; keeping last snapshot.', '暂时无法连接本地服务，保留上次快照。')}${errLine}`,
             focusable: true,
         });
-        return `<span class="stale-badge" id="staleBadge" role="status"${staleTipAttrs}>
-            <span class="stale-dot" aria-hidden="true"></span>
-            <span>${tBiHtml('Cached / Stale', '缓存数据（待刷新）')}${ts}</span>
-        </span>`;
+        return `<span class="stale-badge" id="staleBadge" role="status"${staleTipAttrs}><span class="stale-dot" aria-hidden="true"></span><span>${tBiHtml('Cached / Stale', '缓存数据（待刷新）')}${ts}</span></span>`;
     })() : '';
 
     const lockTipAttrs = docRichTipAttrs({
         key: 'topbar:lock-main',
         title: tBi('Lock to Main Agent', '锁定主会话'),
-        body: tBi(
-            'Ignore background subagent conversations so the monitor stays focused on your main conversation thread.',
-            '开启后将忽略后台子智能体会话，避免监控视图在主会话与子任务之间来回跳动。',
-        ),
-        meta: locked
-            ? tBi('Status: Locked — click to resume tracking all conversations.', '当前状态：已锁定 · 点击可恢复跟随全部会话。')
-            : tBi('Status: Unlocked — click to pin monitoring to the main conversation.', '当前状态：未锁定 · 点击可固定监控主会话。'),
+        body: tBi('Ignore background subagents and stay on the main conversation.', '忽略后台子智能体，保持聚焦主会话。'),
+        meta: locked ? tBi('Locked', '已锁定') : tBi('Unlocked', '未锁定'),
     });
 
     const surfaceTipAttrs = docRichTipAttrs({
         key: 'topbar:surface-badge',
         title: surface === 'app-sidecar' ? 'Antigravity App' : 'Antigravity IDE',
         body: surface === 'app-sidecar'
-            ? tBi('Running as a native Antigravity App Sidecar plugin (zero binary patching).', '当前运行于 Antigravity App 原生侧边插件（Sidecar）环境，零二进制修改。')
-            : tBi('Running inside the Antigravity IDE extension webview.', '当前运行于 Antigravity IDE 扩展面板环境。'),
+            ? tBi('Native Antigravity App Sidecar plugin.', 'Antigravity App 原生 Sidecar 插件。')
+            : tBi('Antigravity IDE extension webview.', 'Antigravity IDE 扩展面板。'),
         focusable: true,
     });
 
@@ -1012,7 +1098,8 @@ function resolveDailyLedgerBuckets(params: MonitorDocumentBuildParams): {
  */
 export function buildMonitorTabsPayload(params: MonitorDocumentBuildParams): MonitorTabsPayload {
     const extras = resolveExtras(params);
-    const usage = params.currentUsage !== undefined ? params.currentUsage : (params.data ?? null);
+    const rawUsage = params.currentUsage !== undefined ? params.currentUsage : (params.data ?? null);
+    const usage = extras.observation && extras.observation.subjectCascadeId !== rawUsage?.cascadeId ? null : rawUsage;
     const monitorStatus = normalizeMonitorStatus(params.monitorStatus ?? params.backendStatus, usage);
     const allUsages = params.allTrajectoryUsages ?? (usage ? [usage] : []);
     const allTrajectories = params.allTrajectories ?? [];
@@ -1021,7 +1108,15 @@ export function buildMonitorTabsPayload(params: MonitorDocumentBuildParams): Mon
     const workspaceUri = params.workspaceUri ?? '';
     const accountSnapshots = params.accountSnapshots ?? [];
     const billingDays = params.billingDays ?? {};
-    const activeBillingDay = billingDays[userInfo?.email ?? params.activeAccountKey ?? ''] ?? 0;
+    const privacyMasked = extras.privacyMasked !== false;
+    const activeAccountHandle = extras.accountHandle
+        || accountSnapshots.find(s => s.isActive)?.accountHandle
+        || params.activeAccountKey
+        || '';
+    const activeBillingDay = billingDays[activeAccountHandle]
+        ?? billingDays[userInfo?.email ?? params.activeAccountKey ?? '']
+        ?? 0;
+    const resolvedActiveCascadeId = extras.observation ? extras.observation.subjectCascadeId ?? undefined : extras.activeConversationId ?? usage?.cascadeId ?? undefined;
     const { todayLedgerActive, ledgerSettled } = resolveDailyLedgerBuckets(params);
     const gmSummary = params.gmSummary ?? null;
     const gmFullSummary = params.gmFullSummary ?? gmSummary;
@@ -1048,6 +1143,9 @@ export function buildMonitorTabsPayload(params: MonitorDocumentBuildParams): Mon
         extras.version,
     );
 
+    const swarmOverview = extras.swarmOverview ?? deriveSwarmOverviewFromTopology(
+        extras.swarmTopology, resolvedActiveCascadeId, extras.inspectedMemberId, extras.lockedRootId, extras.swarmGroupCost,
+    );
     const overviewHtml = buildOverviewTabContent(
         usage,
         modelConfigs,
@@ -1059,7 +1157,8 @@ export function buildMonitorTabsPayload(params: MonitorDocumentBuildParams): Mon
             gmSummary,
             gmConversations,
             customPricing,
-            activeCascadeId: usage?.cascadeId ?? extras.activeConversationId ?? undefined,
+            activeCascadeId: resolvedActiveCascadeId,
+            readableMemberIds: new Set(allTrajectories.map(tr => tr.cascadeId)),
             orchestratorSettings: params.orchestratorSettings,
             orchestratorPricingMode,
             quotaSummary: params.quotaSummary,
@@ -1077,6 +1176,30 @@ export function buildMonitorTabsPayload(params: MonitorDocumentBuildParams): Mon
             watermarks: extras.watermarks,
             speedSample: extras.speedSample,
             orchestratorSplit: extras.orchestratorSplit,
+            observation: extras.observation,
+            inspectedMemberId: extras.inspectedMemberId,
+            inspectedMemberLabel: extras.inspectedMemberLabel,
+            lockedRootId: extras.lockedRootId,
+            lockPendingUnavailable: extras.lockPendingUnavailable,
+            retargetOfferId: extras.retargetOfferId,
+            retargetOfferTitle: extras.retargetOfferTitle,
+            swarmOverview,
+            swarmTopology: extras.swarmTopology,
+            swarmGroupCost: extras.swarmGroupCost,
+            handoffPreview: extras.handoffPreview,
+            recoveryBrief: extras.recoveryBrief,
+            cacheTtl: extras.cacheTtl,
+            contextPctBasis: extras.contextPctBasis,
+            speedMetricMode: extras.speedMetricMode,
+            quotaWindowMode: extras.quotaWindowMode,
+            quotaDirectionMode: extras.quotaDirectionMode,
+            appOnboardingDismissed: Boolean(
+                extras.appSettings?.appOnboardingDismissed
+                ?? params.settings?.appOnboardingDismissed,
+            ),
+            cdpStatus: extras.cdpStatus,
+            appTopBarEnabled: extras.appSettings?.appTopBarEnabled ?? params.settings?.appTopBarEnabled,
+            appComposerRingEnabled: extras.appSettings?.appComposerRingEnabled ?? params.settings?.appComposerRingEnabled,
         },
     );
 
@@ -1089,6 +1212,13 @@ export function buildMonitorTabsPayload(params: MonitorDocumentBuildParams): Mon
         ledgerSettled,
         customPricing,
         extras.turnDiagnostics,
+        {
+            privacyMasked,
+            cacheTtl: extras.cacheTtl ?? extras.promptCacheTtl ?? null,
+            speedMetricMode: extras.speedMetricMode,
+            currency: displayCurrency,
+            nowMs: now,
+        },
     );
 
     const chatsHtml = buildChatHistoryTabContent(
@@ -1097,6 +1227,15 @@ export function buildMonitorTabsPayload(params: MonitorDocumentBuildParams): Mon
         gmSummary,
         gmConversations,
         workspaceUri,
+        undefined,
+        {
+            swarmTopology: extras.swarmTopology,
+            swarmOverview,
+            inspectedMemberId: extras.inspectedMemberId,
+            lockedRootId: extras.lockedRootId,
+            displayCurrency,
+            privacyMasked,
+        },
     );
 
     const pricingHtml = pricingStore
@@ -1110,6 +1249,7 @@ export function buildMonitorTabsPayload(params: MonitorDocumentBuildParams): Mon
             {
                 orchestratorSettings: params.orchestratorSettings,
                 orchestratorPricingMode,
+                currency: displayCurrency,
             },
         )
         : `<p class="empty-msg">${tBiHtml('Initializing...', '初始化中...')}</p>`;
@@ -1120,11 +1260,26 @@ export function buildMonitorTabsPayload(params: MonitorDocumentBuildParams): Mon
         customPricing,
         orchestratorPricingMode,
         quotaRunways: extras.quotaRunways,
+        weeklyRunways: extras.weeklyRunways ?? extras.weeklyQuotaRunways,
+        quotaWindowMode: extras.quotaWindowMode,
+        quotaDirectionMode: extras.quotaDirectionMode,
         isCustomModelActive: extras.isCustomModelActive,
         staleState: extras.staleState,
     });
 
     const hasLiveLedgerData = todayLedgerActive.length > 0 || ledgerSettled.length > 0;
+    const derivedSwarmGroups: SwarmGroupAttributionSpec[] | undefined = extras.swarmTopology && extras.swarmTopology.groupsByRootId.size > 0
+        ? [...extras.swarmTopology.groupsByRootId.values()].map(g => ({
+            rootId: g.rootId,
+            memberIds: [...g.memberIds],
+        }))
+        : undefined;
+    const activeSourceFilter = extras.calendarOptions?.sourceFilter ?? 'all';
+    const liveSurface: 'app' | 'ide' = extras.surface === 'app-sidecar' ? 'app' : 'ide';
+    const liveMatchesSourceFilter = activeSourceFilter === 'all' || activeSourceFilter === liveSurface;
+    const derivedSwarmGroupCosts: Record<string, SwarmGroupCostSummary> | undefined = extras.swarmGroupCost && liveMatchesSourceFilter
+        ? { [extras.swarmGroupCost.rootId]: extras.swarmGroupCost }
+        : undefined;
     const defaultCalendarOptions: CalendarRenderOptions = {
         ...(hasLiveLedgerData
             ? {
@@ -1136,9 +1291,13 @@ export function buildMonitorTabsPayload(params: MonitorDocumentBuildParams): Mon
                 },
             }
             : {}),
-        currency: displayCurrency,
-        subscription: subscriptionConfig,
+        currency: displayCurrency as CalendarRenderOptions['currency'],
+        subscription: subscriptionConfig as CalendarRenderOptions['subscription'],
         customPricing,
+        privacyMasked,
+        swarmTopology: privacyMasked ? undefined : extras.swarmTopology ?? undefined,
+        ...(derivedSwarmGroups ? { swarmGroups: derivedSwarmGroups } : {}),
+        ...(derivedSwarmGroupCosts ? { swarmGroupCosts: derivedSwarmGroupCosts } : {}),
         now,
     };
     const mergedCalendarOptions: CalendarRenderOptions = extras.calendarOptions
@@ -1146,18 +1305,29 @@ export function buildMonitorTabsPayload(params: MonitorDocumentBuildParams): Mon
         : defaultCalendarOptions;
 
     const calendarHtml = buildCalendarTabContent(dailyStore, calYear, calMonth, mergedCalendarOptions);
-    const profileHtml = buildProfileContent(userInfo, modelConfigs, activeBillingDay, params.quotaSummary);
+    const profileHtml = buildProfileContent(userInfo, modelConfigs, activeBillingDay, params.quotaSummary, {
+        quotaWindowMode: extras.quotaWindowMode ?? '5h',
+        quotaDirectionMode: extras.quotaDirectionMode,
+        privacyMasked,
+        accountHandle: activeAccountHandle || undefined,
+    });
     const aboutHtml = buildAboutTabContent(extras.version, {
         surface: extras.surface ?? 'ide',
         updateStatus: resolvedUpdateStatus,
         now,
     });
 
-    const showNativeHudBar = extras.appSettings?.showNativeHudBar
+    const surfaceNativeHudSetting = extras.surface === 'app-sidecar'
+        ? extras.appSettings?.appShowNativeHudBar
+        : extras.appSettings?.ideShowNativeHudBar;
+    const showNativeHudBar = surfaceNativeHudSetting
+        ?? extras.appSettings?.showNativeHudBar
         ?? params.settings?.showNativeHudBar
         ?? (extras.surface === 'app-sidecar');
     const nativeHudHtml = showNativeHudBar
         ? buildNativeHudHtml({
+            quotaWindowMode: extras.quotaWindowMode,
+            quotaDirectionMode: extras.quotaDirectionMode,
             usage,
             modelConfigs,
             quotaSummary: params.quotaSummary,
@@ -1169,26 +1339,29 @@ export function buildMonitorTabsPayload(params: MonitorDocumentBuildParams): Mon
             displayCurrency,
             contextBreakdown: extras.contextBreakdown,
             isCustomModelActive: extras.isCustomModelActive,
-            activeCascadeId: usage?.cascadeId ?? extras.activeConversationId,
+            activeCascadeId: resolvedActiveCascadeId,
             speedSample: extras.speedSample,
             watermarks: extras.watermarks,
             turnCacheInfo: extras.turnCacheInfo,
             orchestratorSettings: params.orchestratorSettings,
             orchestratorPricingMode,
+            observation: extras.observation,
             now,
         })
         : '';
 
     return {
         overview: overviewHtml + eoc,
-        gmdata: gmDataHtml + eoc,
-        chats: chatsHtml + eoc,
-        pricing: pricingHtml + eoc,
-        models: modelsHtml + eoc,
-        calendar: calendarHtml + eoc,
-        profile: profileHtml + eoc,
+        gm: gmDataHtml,
+        gmdata: gmDataHtml,
+        sessions: chatsHtml,
+        chats: chatsHtml,
+        pricing: pricingHtml,
+        models: modelsHtml,
+        calendar: calendarHtml,
+        profile: profileHtml,
         about: aboutHtml + eoc,
-        accountPopover: accountSnapshots.length > 0 ? buildAccountStatusPanel(accountSnapshots, billingDays) : '',
+        accountPopover: accountSnapshots.length > 0 ? buildAccountStatusPanel(accountSnapshots, billingDays, { privacyMasked }) : '',
         accountPopoverHasReady: accountSnapshots.length > 0 ? hasAccountReadyPool(accountSnapshots) : false,
         mastheadControls: buildMonitorMastheadControlsHtml(extras),
         nativeHud: nativeHudHtml,
@@ -1212,17 +1385,77 @@ export function buildMonitorShellHtml(params: MonitorShellParams): string {
         lastUpdatedTime,
     } = params;
     const surface: MonitorSurface = extras.surface ?? 'ide';
+    const privacyMasked = extras.privacyMasked !== false;
     const currentLang = getLanguage();
-    const htmlLang = currentLang === 'zh' ? 'zh-CN' : currentLang === 'en' ? 'en' : 'zh-CN';
+    const langPref = extras.languagePreference ?? extras.appSettings?.languagePreference ?? getLanguagePreference();
+    const primaryCompactLang: PrimaryLanguage = extras.primaryCompactLang
+        ?? detectHostLocaleLanguage(getRuntimeLocaleSources());
+    const viewLang = resolvePerViewEffectiveLanguage(
+        currentLang === 'both' ? 'both' : currentLang,
+        {
+            hostLocale: primaryCompactLang === 'zh' ? 'zh-CN' : 'en-US',
+            viewportWidthPx: extras.viewportWidthPx ?? null,
+        },
+    );
+    const htmlLang = viewLang === 'zh' ? 'zh-CN' : 'en';
     const eoc = buildEocSentinel();
     const imagesAttr = extras.imagesBaseUri ? ` data-images-base-uri="${esc(extras.imagesBaseUri)}"` : '';
     const nativeHudHtml = typeof tabs.nativeHud === 'string' ? tabs.nativeHud : '';
+    const hudAutoHideOnOverview = extras.nativeHudAutoHideOnOverview !== undefined
+        ? Boolean(extras.nativeHudAutoHideOnOverview)
+        : (extras.appSettings?.nativeHudAutoHideOnOverview !== undefined
+            ? Boolean(extras.appSettings.nativeHudAutoHideOnOverview)
+            : true);
+
+    const resolvedInitial = resolveTabAlias(initialTab);
+    const activeView: CanonicalViewId = resolvedInitial?.tab ?? 'overview';
+    const initialAnchor = resolvedInitial?.anchor ?? '';
+    const initialTabAttr = resolvedInitial ? ` data-initial-tab="${esc(resolvedInitial.tab)}"` : '';
+    const initialAnchorAttr = initialAnchor ? ` data-initial-anchor="${esc(initialAnchor)}"` : '';
+
+    const isMainActive = (id: CanonicalMainTabId): boolean => activeView === id;
+    const settingsTabTipAttrs = docRichTipAttrs({
+        key: 'nav:tab:settings',
+        title: tBi('Settings', '设置'),
+        body: tBi(
+            'Overlays & CDP setup, display language & currency, telemetry thresholds, ~/.gemini/GEMINI.md Global Rules, and updates.',
+            '配置悬浮层与 CDP 启动器、界面语言与币种、遥测阈值、~/.gemini/GEMINI.md 全局规则与版本更新。',
+        ),
+    });
+    const mainTabSpecs: ReadonlyArray<{ id: CanonicalMainTabId; color: string; labelHtml: string; extraAttrs?: string }> = [
+        { id: 'overview', color: 'blue', labelHtml: tHtml('nav.overview') },
+        { id: 'gm', color: 'orange', labelHtml: tHtml('nav.modelCalls') },
+        { id: 'sessions', color: 'cyan', labelHtml: tHtml('nav.sessions') },
+        { id: 'calendar', color: 'blue', labelHtml: tHtml('nav.usageCost') },
+        { id: 'models', color: 'green', labelHtml: tHtml('nav.modelsQuotas') },
+        { id: 'settings', color: 'slate', labelHtml: tHtml('nav.settings'), extraAttrs: settingsTabTipAttrs },
+    ];
+    const firstTabFocusFallback = !CANONICAL_MAIN_TABS.includes(activeView as CanonicalMainTabId);
+    const mainTabButtonsHtml = mainTabSpecs.map((tab, idx) => {
+        const active = isMainActive(tab.id);
+        const tabIndex = active || (firstTabFocusFallback && idx === 0) ? '0' : '-1';
+        return `<button type="button" class="tab-btn${active ? ' active' : ''}" id="tabBtn-${tab.id}" role="tab" data-tab="${tab.id}" data-color="${tab.color}" aria-selected="${active ? 'true' : 'false'}" aria-controls="tab-${tab.id}" tabindex="${tabIndex}"${active ? ' aria-current="page"' : ''}${tab.extraAttrs || ''}><span class="tab-label">${tab.labelHtml}</span></button>`;
+    }).join('\n        ');
+
+    const aboutActive = activeView === 'about';
+    const freezeLabel = t('panel.freeze');
+    const unfreezeLabel = t('panel.unfreeze');
+    const frozenHint = t('panel.frozenHint');
+    const gmSlotHtml = typeof tabs.gm === 'string' ? tabs.gm : tabs.gmdata;
+    const activitySlotHtml = typeof tabs.activity === 'string' ? tabs.activity : '';
+    const sessionsSlotHtml = typeof tabs.sessions === 'string' ? tabs.sessions : tabs.chats;
+    const rawCspNonce = typeof extras.cspNonce === 'string' ? extras.cspNonce.trim() : '';
+    const safeCspNonce = /^[A-Za-z0-9+/=_-]{8,128}$/.test(rawCspNonce) ? rawCspNonce : '';
+    const cspMetaHtml = safeCspNonce
+        ? `\n<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src https: data:; style-src 'unsafe-inline'; script-src 'nonce-${esc(safeCspNonce)}';">`
+        : '';
+    const scriptNonceAttr = safeCspNonce ? ` nonce="${esc(safeCspNonce)}"` : '';
 
     return `<!DOCTYPE html>
 <html lang="${htmlLang}" data-hide-scrollbar="${panelHintPrefs.showScrollbar ? 'false' : 'true'}">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">${cspMetaHtml}
 <title>${esc(tBi('Antigravity Monitor', 'Antigravity 监控面板'))}</title>
 <style>
 ${getStyles()}
@@ -1236,7 +1469,7 @@ ${getEditorialStyles()}
 </style>
 ${extras.extraHeadHtml || ''}
 </head>
-<body data-editorial="true" data-acm-surface="${surface}" data-lang="${currentLang}"${initialTab ? ` data-initial-tab="${esc(initialTab)}"` : ''}${imagesAttr} data-privacy-default="true" data-zoom="${zoomLevel}" data-tab-hint-enabled="${panelHintPrefs.showTabScrollHint ? 'true' : 'false'}" data-hide-scrollbar="${panelHintPrefs.showScrollbar ? 'false' : 'true'}" data-hide-eoc="${panelHintPrefs.showEndOfContent ? 'false' : 'true'}">
+<body data-editorial="true" data-acm-surface="${surface}" data-lang="${currentLang}" data-lang-pref="${esc(langPref)}" data-primary-lang="${primaryCompactLang}" data-view-lang="${viewLang}" data-active-tab="${activeView}" data-hud-auto-hide-overview="${hudAutoHideOnOverview ? 'true' : 'false'}"${initialTabAttr}${initialAnchorAttr}${imagesAttr} data-privacy-default="true" data-privacy-masked="${privacyMasked ? 'true' : 'false'}" data-zoom="${zoomLevel}" data-tab-hint-enabled="false" data-hide-scrollbar="${panelHintPrefs.showScrollbar ? 'false' : 'true'}" data-hide-eoc="${panelHintPrefs.showEndOfContent ? 'false' : 'true'}">
     <div class="panel-topbar">
         <header class="topbar-title">
             <div class="topbar-title-left">
@@ -1245,7 +1478,7 @@ ${extras.extraHeadHtml || ''}
                     <span class="topbar-brand-text">${tBiHtml('Antigravity Monitor', 'Antigravity 监控面板')}</span>
                 </h1>
                 <div class="acct-popover-anchor">
-                    <button class="acct-popover-trigger" id="acctPopoverTrigger" aria-expanded="false" aria-controls="acctPopoverPanel">
+                    <button type="button" class="acct-popover-trigger" id="acctPopoverTrigger" aria-expanded="false" aria-controls="acctPopoverPanel">
                         <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M5.5 21a6.5 6.5 0 0 1 13 0"/><path d="M16.5 6.5l2 -2M18 8l2.5 -1M18.5 4.5L20 2.5" opacity="0.5"/></svg>
                         <span>${tBiHtml('Account Panel', '账号面板')}</span>
                         ${hasAccountReadyPool(accountSnapshots) ? '<span class="acct-popover-dot" aria-hidden="true"></span>' : ''}
@@ -1254,34 +1487,40 @@ ${extras.extraHeadHtml || ''}
             </div>
             <div class="header-actions">
                 <div class="lang-switcher">
-                    <button class="lang-btn${currentLang === 'zh' ? ' active' : ''}" data-lang="zh">中文</button>
-                    <button class="lang-btn${currentLang === 'en' ? ' active' : ''}" data-lang="en">EN</button>
-                    <button class="lang-btn${currentLang === 'both' ? ' active' : ''}" data-lang="both">${tBiHtml('Both', '双语')}</button>
+                    <button type="button" class="lang-btn${currentLang === 'zh' ? ' active' : ''}" data-lang="zh">中文</button>
+                    <button type="button" class="lang-btn${currentLang === 'en' ? ' active' : ''}" data-lang="en">EN</button>
+                    <button type="button" class="lang-btn${currentLang === 'both' ? ' active' : ''}" data-lang="both">${tBiHtml('Both', '双语')}</button>
                 </div>
-                <button class="action-btn${paused ? ' paused' : ''}" id="pauseBtn"
-                    aria-pressed="${paused}" aria-label="${esc(tBi(paused ? 'Resume auto-refresh' : 'Pause auto-refresh', paused ? '恢复自动刷新' : '暂停自动刷新'))}"
-                    data-label-pause="${esc(tBi('Pause auto-refresh', '暂停自动刷新'))}"
-                    data-label-resume="${esc(tBi('Resume auto-refresh', '恢复自动刷新'))}"
-                    data-label-paused="${esc(tBi('PAUSED', '已暂停'))}"
-                    data-tip-body-pause="${esc(tBi('Temporarily pause periodic polling so figures stay still while you inspect.', '暂停定时自动刷新，方便静置核对当前各项数据。'))}"
-                    data-tip-body-resume="${esc(tBi('Auto-refresh is paused. Click to resume periodic polling.', '当前已暂停自动刷新，点击恢复定时轮询更新。'))}"
+                <button type="button" class="action-btn${paused ? ' paused' : ''}" id="pauseBtn"
+                    aria-pressed="${paused}" aria-label="${esc(paused ? unfreezeLabel : freezeLabel)}"
+                    data-label-pause="${esc(freezeLabel)}"
+                    data-label-resume="${esc(unfreezeLabel)}"
+                    data-label-paused="${esc(tBi('FROZEN', '已冻结'))}"
+                    data-tip-body-pause="${esc(tBi('Freeze panel polling.', '冻结面板轮询。'))}"
+                    data-tip-body-resume="${esc(frozenHint)}"
                     data-popover-key="topbar:pause"
-                    data-tip-title="${esc(tBi(paused ? 'Resume auto-refresh' : 'Pause auto-refresh', paused ? '恢复自动刷新' : '暂停自动刷新'))}"
-                    data-tip-body="${esc(tBi(paused ? 'Auto-refresh is paused. Click to resume periodic polling.' : 'Temporarily pause periodic polling so figures stay still while you inspect.', paused ? '当前已暂停自动刷新，点击恢复定时轮询更新。' : '暂停定时自动刷新，方便静置核对当前各项数据。'))}"
-                    data-tip-meta="${esc(tBi('Does not affect Antigravity itself — only pauses panel polling.', '仅暂停本监控面板轮询，不影响 Antigravity 正常运行。'))}">
+                    data-tip-title="${esc(paused ? unfreezeLabel : freezeLabel)}"
+                    data-tip-body="${esc(paused ? frozenHint : tBi('Freeze panel polling.', '冻结面板轮询。'))}">
                     <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">${paused
             ? '<path fill="currentColor" d="M11.596 8.697l-6.363 3.692c-.54.313-1.233-.066-1.233-.697V4.308c0-.63.692-1.01 1.233-.696l6.363 3.692a.802.802 0 0 1 0 1.393"/>'
             : '<path fill="currentColor" d="M5.5 3.5A1.5 1.5 0 0 1 7 5v6a1.5 1.5 0 0 1-3 0V5a1.5 1.5 0 0 1 1.5-1.5m5 0A1.5 1.5 0 0 1 12 5v6a1.5 1.5 0 0 1-3 0V5a1.5 1.5 0 0 1 1.5-1.5"/>'
         }</svg>
                 </button>
-                <button class="action-btn" id="refreshBtn" aria-label="${esc(tBi('Refresh', '刷新'))}"
+                <button type="button" class="action-btn" id="refreshBtn" aria-label="${esc(tBi('Refresh', '刷新'))}"
                     data-popover-key="topbar:refresh"
                     data-tip-title="${esc(tBi('Refresh Now', '立即刷新'))}"
-                    data-tip-body="${esc(tBi('Fetch the latest context usage, GM telemetry, and model quotas right away.', '立即拉取最新的上下文占用、GM 遥测与模型配额数据。'))}"
-                    data-tip-meta="${esc(tBi('Bypasses the polling interval for an immediate read-only update.', '跳过轮询间隔直接执行一次只读拉取。'))}">
+                    data-tip-body="${esc(tBi('Fetch latest telemetry now.', '立即拉取最新遥测数据。'))}">
                     ${ICON.refresh}
                 </button>
-                <span class="update-time">${paused ? `<span class="paused-indicator">${tBiHtml('PAUSED', '已暂停')}</span>` : ''} ${esc(lastUpdatedTime)}</span>
+                <button type="button" class="action-btn topbar-util-btn${aboutActive ? ' active' : ''}" id="topbarAboutBtn"
+                    data-utility-view="about" aria-pressed="${aboutActive ? 'true' : 'false'}" aria-controls="tab-about"
+                    aria-label="${esc(t('nav.about'))}"
+                    data-popover-key="topbar:about"
+                    data-tip-title="${esc(tBi('About Antigravity Monitor', '关于 Antigravity 监控面板'))}"
+                    data-tip-body="${esc(tBi('Version, supported features, privacy, and project links.', '查看运行版本、各项功能、隐私说明与开源项目链接。'))}">
+                    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14m0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16"/><path fill="currentColor" d="m8.93 6.588-2.29.287-.082.38.45.083c.294.07.352.176.288.469l-.738 3.468c-.194.897.105 1.319.808 1.319.545 0 1.178-.252 1.465-.598l.088-.416c-.2.176-.492.246-.686.246-.275 0-.375-.193-.304-.533zM9 4.5a1 1 0 1 1-2 0 1 1 0 0 1 2 0"/></svg>
+                </button>
+                <span class="update-time">${paused ? `<span class="paused-indicator">${tBiHtml('FROZEN', '已冻结')}</span>` : ''} ${esc(lastUpdatedTime)}</span>
             </div>
         </header>
 
@@ -1290,70 +1529,52 @@ ${extras.extraHeadHtml || ''}
         </div>
 
         <div class="tab-bar-wrapper">
-        <button class="tab-arrow tab-arrow-left is-faded" id="tabArrowLeft" aria-label="${esc(tBi('Scroll tabs left', '向左滚动标签'))}">
-            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M11.354 1.646a.5.5 0 0 1 0 .708L5.707 8l5.647 5.646a.5.5 0 0 1-.708.708l-6-6a.5.5 0 0 1 0-.708l6-6a.5.5 0 0 1 .708 0"/></svg>
-        </button>
-        <nav class="tab-bar" id="tabBar" aria-label="${esc(tBi('Monitor sections', '监控面板分区'))}">
-        <div class="tab-slider"></div>
-        <button class="tab-btn active" data-tab="overview" data-color="blue" aria-current="page">${ICON.chart}<span class="tab-label">${tBiHtml('Overview', '总览')}</span></button>
-        <button class="tab-btn" data-tab="gmdata" data-color="orange">${ICON.bolt}<span class="tab-label">${tBiHtml('GM Data', 'GM 数据')}</span></button>
-        <button class="tab-btn" data-tab="chats" data-color="cyan">${ICON.chat}<span class="tab-label">${tBiHtml('Sessions', '会话')}</span></button>
-        <button class="tab-btn" data-tab="pricing" data-color="blue"><svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M4 10.781c.148 1.667 1.513 2.85 3.591 3.003V15h1.043v-1.216c2.27-.179 3.678-1.438 3.678-3.315 0-1.667-1.104-2.512-3.233-3.037l-.445-.107V3.63c1.213.183 1.968.91 2.141 1.88h1.762c-.112-1.796-1.519-2.965-3.455-3.124V1.036H8.59v1.383C6.408 2.583 5.008 3.9 5.003 5.54c0 1.592 1.063 2.457 3.146 2.963l.399.1v3.979c-1.29-.183-2.113-.879-2.275-1.8H4zm4.586-4.34C7.494 6.137 6.94 5.695 6.94 5.092c0-.66.52-1.183 1.575-1.37v2.72h.071zm.889 2.283c1.335.36 1.942.846 1.942 1.548 0 .781-.633 1.35-1.823 1.493V8.851l-.119-.127z"/></svg><span class="tab-label">${tBiHtml('Cost', '成本')}</span></button>
-        <button class="tab-btn" data-tab="models" data-color="green">${ICON.bolt}<span class="tab-label">${tBiHtml('Models', '模型')}</span></button>
-        <button class="tab-btn" data-tab="calendar" data-color="cyan"><svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M3.5 0a.5.5 0 0 1 .5.5V1h8V.5a.5.5 0 0 1 1 0V1h1a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2V3a2 2 0 0 1 2-2h1V.5a.5.5 0 0 1 .5-.5M1 4v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V4z"/></svg><span class="tab-label">${tBiHtml('Calendar', '日历')}</span></button>
-        <button class="tab-btn" data-tab="profile" data-color="gray">${ICON.user}<span class="tab-label">${tBiHtml('Profile', '账号')}</span></button>
-        <button class="tab-btn" data-tab="settings" data-color="gray">${ICON.shield}<span class="tab-label">${tBiHtml('Settings', '设置')}</span></button>
-        <button class="tab-btn" data-tab="about" data-color="orange"><svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14m0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16"/><path fill="currentColor" d="m8.93 6.588-2.29.287-.082.38.45.083c.294.07.352.176.288.469l-.738 3.468c-.194.897.105 1.319.808 1.319.545 0 1.178-.252 1.465-.598l.088-.416c-.2.176-.492.246-.686.246-.275 0-.375-.193-.304-.533zM9 4.5a1 1 0 1 1-2 0 1 1 0 0 1 2 0"/></svg><span class="tab-label">${tBiHtml('About', '关于')}</span></button>
+        <nav class="tab-bar" id="tabBar" role="tablist" aria-label="${esc(tBi('Monitor sections', '监控面板分区'))}">
+        <div class="tab-slider" aria-hidden="true"></div>
+        ${mainTabButtonsHtml}
     </nav>
-        <button class="tab-arrow tab-arrow-right is-faded" id="tabArrowRight" aria-label="${esc(tBi('Scroll tabs right', '向右滚动标签'))}">
-            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M4.646 1.646a.5.5 0 0 1 .708 0l6 6a.5.5 0 0 1 0 .708l-6 6a.5.5 0 0 1-.708-.708L10.293 8 4.646 2.354a.5.5 0 0 1 0-.708"/></svg>
-        </button>
     </div>
 
-    <div class="tab-scroll-hint" id="tabScrollHint" hidden>
-        <span class="tab-scroll-hint-text">${ICON.timeline} <span>${tBiHtml('Too many tabs? Hold Shift and use the mouse wheel to scroll horizontally.', '标签过多时，可按住 Shift 再滚动鼠标滚轮进行横向滚动。')}</span></span>
-        <button class="tab-scroll-hint-close" id="dismissTabScrollHint" aria-label="${esc(tBi('Dismiss tab scroll hint', '关闭标签滚动提示'))}">
-            <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path fill="currentColor" d="M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.75.75 0 1 1 1.06 1.06L9.06 8l3.22 3.22a.75.75 0 1 1-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 0 1-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06"/></svg>
-        </button>
-    </div>
     <div class="acct-popover-dropdown" id="acctPopoverPanel" hidden>
         <div class="acct-popover-body" id="acctPopoverBody">
-            ${accountSnapshots.length > 0 ? buildAccountStatusPanel(accountSnapshots, billingDays) : `<p class="empty-msg">${tBiHtml('No account data yet.', '暂无账号数据。')}</p>`}
+            ${accountSnapshots.length > 0 ? buildAccountStatusPanel(accountSnapshots, billingDays, { privacyMasked }) : `<p class="empty-msg">${tBiHtml('No account data yet.', '暂无账号数据。')}</p>`}
         </div>
     </div>
     </div>
-    <div class="native-hud-host" id="nativeHudHost"${nativeHudHtml ? '' : ' hidden'}>${nativeHudHtml}</div>
+    <div class="native-hud-host" id="nativeHudHost" data-hud-enabled="${nativeHudHtml ? 'true' : 'false'}"${nativeHudHtml ? '' : ' hidden'}>${nativeHudHtml}</div>
     <main id="monitor-content">
-    <div class="tab-pane active" id="tab-overview">
+    <div class="tab-pane${activeView === 'overview' ? ' active' : ''}" id="tab-overview" role="tabpanel" aria-labelledby="tabBtn-overview">
         ${tabs.overview}
     </div>
-    <div class="tab-pane" id="tab-gmdata">
-        ${tabs.gmdata}
+    <div class="tab-pane${activeView === 'gm' ? ' active' : ''}" id="tab-gm" role="tabpanel" aria-labelledby="tabBtn-gm">
+        <div class="tab-slot" id="slot-gm" data-tab-slot="gm">${gmSlotHtml}</div>
+        <div class="tab-slot tab-slot-secondary" id="slot-activity" data-tab-slot="activity"${activitySlotHtml ? '' : ' hidden'}>${activitySlotHtml}</div>
+        ${eoc}
     </div>
-    <div class="tab-pane" id="tab-chats">
-        ${tabs.chats}
+    <div class="tab-pane${activeView === 'sessions' ? ' active' : ''}" id="tab-sessions" role="tabpanel" aria-labelledby="tabBtn-sessions">
+        <div class="tab-slot" id="slot-sessions" data-tab-slot="sessions">${sessionsSlotHtml}</div>
+        ${eoc}
     </div>
-    <div class="tab-pane" id="tab-pricing">
-        ${tabs.pricing}
+    <div class="tab-pane${activeView === 'calendar' ? ' active' : ''}" id="tab-calendar" role="tabpanel" aria-labelledby="tabBtn-calendar">
+        <div class="tab-slot" id="slot-calendar" data-tab-slot="calendar">${tabs.calendar}</div>
+        <div class="tab-slot tab-slot-secondary" id="slot-pricing" data-tab-slot="pricing">${tabs.pricing}</div>
+        ${eoc}
     </div>
-    <div class="tab-pane" id="tab-models">
-        ${tabs.models}
+    <div class="tab-pane${activeView === 'models' ? ' active' : ''}" id="tab-models" role="tabpanel" aria-labelledby="tabBtn-models">
+        <div class="tab-slot" id="slot-models" data-tab-slot="models">${tabs.models}</div>
+        <div class="tab-slot tab-slot-secondary" id="slot-profile" data-tab-slot="profile">${tabs.profile}</div>
+        ${eoc}
     </div>
-    <div class="tab-pane" id="tab-calendar">
-        ${tabs.calendar}
-    </div>
-    <div class="tab-pane" id="tab-profile">
-        ${tabs.profile}
-    </div>
-    <div class="tab-pane" id="tab-settings">
+    <div class="tab-pane${activeView === 'settings' ? ' active' : ''}" id="tab-settings" role="tabpanel" aria-labelledby="tabBtn-settings">
         ${settingsHtml}
         ${eoc}
     </div>
-    <div class="tab-pane" id="tab-about">
+    <div class="tab-pane${activeView === 'about' ? ' active' : ''}" id="tab-about" role="region" aria-label="${esc(t('nav.about'))}">
         ${tabs.about}
     </div>
 
     </main>
+    <div id="acmLiveRegion" class="sr-only" role="status" aria-live="polite" aria-atomic="true" aria-label="${esc(t('a11y.statusRegionLabel'))}"></div>
     <div id="acmRichTipPopover" class="acm-rich-tip" role="tooltip" hidden data-pinned="false" data-placement="top" aria-hidden="true">
         <div class="acm-rich-tip-head" id="acmRichTipHead" hidden>
             <div class="acm-rich-tip-title" id="acmRichTipTitle"></div>
@@ -1362,7 +1583,7 @@ ${extras.extraHeadHtml || ''}
         <div class="acm-rich-tip-body" id="acmRichTipBody"></div>
         <div class="acm-rich-tip-meta" id="acmRichTipMeta" hidden></div>
     </div>
-    <script>
+    <script${scriptNonceAttr}>
         ${getScript()}
     </script>
     ${extras.extraBodyEndHtml || ''}
@@ -1404,18 +1625,40 @@ export function buildMonitorDocumentHtml(params: MonitorDocumentBuildParams): st
     );
     const zoomLevel = params.zoomLevel ?? 100;
 
+    const mergedAppSettingsForSettingsTab: Partial<AppSettingsWithV118> | undefined = (
+        extras.appSettings
+        || extras.languagePreference !== undefined
+        || extras.nativeHudAutoHideOnOverview !== undefined
+        || extras.contextPctBasis !== undefined
+        || extras.speedMetricMode !== undefined
+        || extras.quotaWindowMode !== undefined
+        || extras.quotaDirectionMode !== undefined
+    )
+        ? {
+            ...(extras.appSettings ?? {}),
+            ...(extras.languagePreference !== undefined ? { languagePreference: extras.languagePreference } : {}),
+            ...(extras.nativeHudAutoHideOnOverview !== undefined ? { nativeHudAutoHideOnOverview: extras.nativeHudAutoHideOnOverview } : {}),
+            ...(extras.contextPctBasis !== undefined ? { contextPctBasis: extras.contextPctBasis } : {}),
+            ...(extras.speedMetricMode !== undefined ? { speedMetricMode: extras.speedMetricMode } : {}),
+            ...(extras.quotaWindowMode !== undefined ? { quotaWindowMode: extras.quotaWindowMode } : {}),
+            ...(extras.quotaDirectionMode !== undefined ? { quotaDirectionMode: extras.quotaDirectionMode } : {}),
+        }
+        : undefined;
+
     const settingsHtml = buildSettingsContent(
         modelConfigs,
         params.storageDiagnostics,
         panelHintPrefs,
         {
             settings: mergedSettings,
-            appSettings: extras.appSettings,
+            appSettings: mergedAppSettingsForSettingsTab,
             surface: extras.surface ?? 'ide',
             zoomLevel,
             version: extras.version,
             cdpStatus: extras.cdpStatus,
             updateStatus: resolvedUpdateStatus,
+            globalRules: extras.globalRules,
+            privacyMasked: extras.privacyMasked !== false,
         },
     );
 

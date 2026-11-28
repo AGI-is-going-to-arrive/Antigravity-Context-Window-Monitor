@@ -1,10 +1,20 @@
 import type * as vscode from 'vscode';
 import type { StateBucket } from './durable-state';
 import {
+    type EffectiveDisplayLanguage,
+    type HostLocaleSources,
     type Language,
-    isLanguage,
+    type LanguagePreference,
     getLanguage,
+    getLanguagePreference,
+    getRuntimeLocaleSources,
+    isLanguage,
+    isLanguagePreference,
+    resolveStoredLanguagePreference,
+    setDefaultHostLocaleHints,
     setLanguageInMemory,
+    setLanguagePreferenceInMemory,
+    setLanguagePreferenceToState,
     setLanguageToState,
     tBi,
 } from './i18n-core';
@@ -12,20 +22,91 @@ import {
 export * from './i18n-core';
 
 /**
- * Initialize i18n from VS Code configuration.
- * Call once during extension activation.
+ * Safely read `vscode.env.language` when running inside the Antigravity IDE / VS Code host.
+ * Returns `undefined` when loaded in pure Node.js without the `vscode` runtime.
  */
-export function initI18n(context: vscode.ExtensionContext): void {
-    const saved = context.globalState.get<Language>('displayLanguage', 'both');
-    if (saved && isLanguage(saved)) {
-        setLanguageInMemory(saved);
+export function getVscodeLanguage(vscodeApi?: { env?: { language?: string } }): string | undefined {
+    try {
+        const api = vscodeApi ?? (require('vscode') as typeof import('vscode'));
+        const lang = api?.env?.language;
+        return typeof lang === 'string' && lang.trim().length > 0 ? lang : undefined;
+    } catch {
+        return undefined;
     }
 }
 
 /**
- * Set and persist the display language.
+ * Build IDE locale detection sources prioritizing `vscode.env.language` -> App/host locale
+ * -> normalized `Intl` / platform environment locale.
+ */
+export function getIdeLocaleSources(overrides: HostLocaleSources = {}): HostLocaleSources {
+    const vscodeLanguage = overrides.vscodeLanguage !== undefined
+        ? overrides.vscodeLanguage
+        : getVscodeLanguage();
+    return getRuntimeLocaleSources({
+        ...overrides,
+        vscodeLanguage,
+    });
+}
+
+/**
+ * Initialize i18n from VS Code `globalState` with `vscode.env.language`-prioritized first-boot
+ * detection when no explicit preference has been persisted yet.
+ * Preserves an explicitly stored `'both'` preference permanently.
+ * Call once during extension activation.
+ */
+export function initI18n(
+    context: vscode.ExtensionContext,
+    localeOverrides?: HostLocaleSources,
+): EffectiveDisplayLanguage {
+    const vscodeLanguage = localeOverrides?.vscodeLanguage !== undefined
+        ? localeOverrides.vscodeLanguage
+        : getVscodeLanguage();
+    setDefaultHostLocaleHints({
+        vscodeLanguage,
+        hostLocale: localeOverrides?.hostLocale,
+        intlLocale: localeOverrides?.intlLocale,
+        envLocale: localeOverrides?.envLocale,
+    });
+
+    const preference = resolveStoredLanguagePreference(context.globalState);
+    const sources = getIdeLocaleSources(localeOverrides);
+    return setLanguagePreferenceInMemory(preference, sources);
+}
+
+/**
+ * Initialize i18n for Antigravity IDE from both DurableState (if provided) and VS Code `globalState`,
+ * preferring an explicitly persisted preference (including `'both'`) and falling back to `'auto'`
+ * resolved via `vscode.env.language` -> `hostLocale` -> `intlLocale` -> `envLocale`.
+ */
+export function initI18nForIde(
+    context: vscode.ExtensionContext,
+    state?: StateBucket,
+    localeOverrides?: HostLocaleSources,
+): EffectiveDisplayLanguage {
+    const vscodeLanguage = localeOverrides?.vscodeLanguage !== undefined
+        ? localeOverrides.vscodeLanguage
+        : getVscodeLanguage();
+    setDefaultHostLocaleHints({
+        vscodeLanguage,
+        hostLocale: localeOverrides?.hostLocale,
+        intlLocale: localeOverrides?.intlLocale,
+        envLocale: localeOverrides?.envLocale,
+    });
+
+    const fromDurable = state ? resolveStoredLanguagePreference(state) : 'auto';
+    const preference = fromDurable !== 'auto'
+        ? fromDurable
+        : resolveStoredLanguagePreference(context.globalState);
+    const sources = getIdeLocaleSources(localeOverrides);
+    return setLanguagePreferenceInMemory(preference, sources);
+}
+
+/**
+ * Set and persist an explicit display language (`'en' | 'zh' | 'both'`).
  */
 export async function setLanguage(lang: Language, context: vscode.ExtensionContext, state?: StateBucket): Promise<void> {
+    if (!isLanguage(lang)) { return; }
     setLanguageInMemory(lang);
     await context.globalState.update('displayLanguage', lang);
     if (state) {
@@ -34,26 +115,59 @@ export async function setLanguage(lang: Language, context: vscode.ExtensionConte
 }
 
 /**
- * Show a QuickPick for the user to select display language.
+ * Set and persist a language preference (`'auto' | 'en' | 'zh' | 'both'`), resolving `'auto'`
+ * via IDE `vscode.env.language`-prioritized detection without clobbering an explicit `'both'`.
+ */
+export async function setLanguagePreference(
+    preference: LanguagePreference,
+    context: vscode.ExtensionContext,
+    state?: StateBucket,
+    localeOverrides?: HostLocaleSources,
+): Promise<EffectiveDisplayLanguage> {
+    if (!isLanguagePreference(preference)) {
+        return getLanguage();
+    }
+    const sources = getIdeLocaleSources(localeOverrides);
+    const effective = setLanguagePreferenceInMemory(preference, sources);
+    await context.globalState.update('languagePreference', preference);
+    await context.globalState.update('displayLanguage', preference === 'auto' ? undefined : preference);
+    if (state) {
+        await setLanguagePreferenceToState(preference, state, sources);
+    }
+    return effective;
+}
+
+/**
+ * Show a QuickPick for the user to select display language preference.
  */
 export async function showLanguagePicker(context: vscode.ExtensionContext, state?: StateBucket): Promise<void> {
     const vscodeApi = require('vscode') as typeof import('vscode');
+    const currentPreference = getLanguagePreference();
     const currentLanguage = getLanguage();
-    const items: vscode.QuickPickItem[] = [
+    const items: Array<vscode.QuickPickItem & { pref: LanguagePreference }> = [
         {
+            pref: 'auto',
+            label: '$(globe) Auto / 自动（跟随系统）',
+            description: 'Follow IDE / system locale — 跟随系统语言',
+            detail: currentPreference === 'auto' ? `✅ Current / 当前 (${currentLanguage})` : '',
+        },
+        {
+            pref: 'zh',
             label: '$(globe) 中文',
             description: 'Chinese Only — 仅显示中文',
-            detail: currentLanguage === 'zh' ? '✅ Current / 当前' : '',
+            detail: currentPreference === 'zh' ? '✅ Current / 当前' : '',
         },
         {
+            pref: 'en',
             label: '$(globe) English',
             description: 'English Only — 仅显示英文',
-            detail: currentLanguage === 'en' ? '✅ Current / 当前' : '',
+            detail: currentPreference === 'en' ? '✅ Current / 当前' : '',
         },
         {
+            pref: 'both',
             label: '$(globe) Bilingual / 双语',
             description: 'English + Chinese — 中英双语',
-            detail: currentLanguage === 'both' ? '✅ Current / 当前' : '',
+            detail: currentPreference === 'both' ? '✅ Current / 当前' : '',
         },
     ];
 
@@ -65,19 +179,18 @@ export async function showLanguagePicker(context: vscode.ExtensionContext, state
 
     if (!picked) { return; }
 
-    let lang: Language;
-    if (picked.label.includes('中文') && !picked.label.includes('Bilingual')) {
-        lang = 'zh';
-    } else if (picked.label.includes('English') && !picked.label.includes('Bilingual')) {
-        lang = 'en';
-    } else {
-        lang = 'both';
+    if (picked.pref === 'auto') {
+        await setLanguagePreference('auto', context, state);
+        return;
     }
 
+    const lang: Language = picked.pref;
     if (state) {
         await setLanguageToState(lang, state);
         await context.globalState.update('displayLanguage', lang);
+        await context.globalState.update('languagePreference', lang);
         return;
     }
     await setLanguage(lang, context);
+    await context.globalState.update('languagePreference', lang);
 }

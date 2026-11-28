@@ -9,6 +9,24 @@
 // quota pools supplement the catalog's provider metadata.
 
 import type { Language } from './i18n';
+import {
+    extractModelShortId,
+    isPlatformModelId,
+    normalizeZeroDayModelDisplayName,
+    parseAvailableModelsSyncPayload,
+    resolveModelLimitsWithProvenance,
+    type ModelCatalogSyncOptions,
+    type ModelCatalogSyncResult,
+    type ResolvedModelLimitsWithProvenance,
+} from './core/model-catalog-sync';
+
+export type {
+    ContextLimitProvenance,
+    ModelCatalogSyncOptions,
+    ModelCatalogSyncResult,
+    ResolvedModelLimitsWithProvenance,
+} from './core/model-catalog-sync';
+export { normalizeZeroDayModelDisplayName } from './core/model-catalog-sync';
 
 /** External model identifiers must never read inherited Object prototype members. */
 function ownValue<T>(table: Record<string, T>, key: string): T | undefined {
@@ -505,6 +523,15 @@ export function getContextLimit(
     return guessed.cpLimit > 0 ? (guessed.cpLimit - 1000) : DEFAULT_CONTEXT_LIMIT;
 }
 
+const liveCheckpointerOverrideIds = new Set<string>();
+const liveCatalogSyncedIds = new Set<string>();
+
+/** Clear live checkpointer/catalog sync provenance on backend reconnect or account switch. */
+export function clearLiveModelSyncProvenance(): void {
+    liveCheckpointerOverrideIds.clear();
+    liveCatalogSyncedIds.clear();
+}
+
 /**
  * Dynamically override context limits based on official checkpointer parameters.
  */
@@ -512,8 +539,102 @@ export function overrideContextLimits(overrides: Record<string, number>): void {
     for (const [model, limit] of Object.entries(overrides)) {
         if (limit > 0) {
             DEFAULT_CONTEXT_LIMITS[model] = limit;
+            liveCheckpointerOverrideIds.add(model);
+            const resolved = resolveModelId(model);
+            if (resolved) {
+                liveCheckpointerOverrideIds.add(resolved);
+            }
         }
     }
+}
+
+/**
+ * Apply a raw `GetAvailableModels` LS RPC payload via the shared `src/core/model-catalog-sync.ts`
+ * parser, updating aliases, model specs, image-generation availability, and checkpointer limits.
+ */
+export function applyModelCatalogSync(
+    resp: unknown,
+    options?: { isInLivePicker?: (resolvedId: string) => boolean },
+): ModelCatalogSyncResult {
+    const syncOptions: ModelCatalogSyncOptions = {
+        resolveKnownModelId: resolveModelId,
+        getExistingSpec: (resolvedId) => ownValue(activeModelSpecs, resolvedId),
+        isInLivePicker: options?.isInLivePicker,
+    };
+    const result = parseAvailableModelsSyncPayload(resp, syncOptions);
+
+    for (const entry of result.entries) {
+        registerResponseModelAlias(entry.responseModelAlias, entry.resolvedId);
+        updateModelSpec(entry.resolvedId, entry.specPatch);
+        if (entry.specPatch.maxTokens && entry.specPatch.maxTokens > 0) {
+            liveCatalogSyncedIds.add(entry.resolvedId);
+        }
+    }
+    if (result.hasImageModelList) {
+        setAvailableImageModelIds(result.imageModelIds);
+    }
+    if (Object.keys(result.contextLimitOverrides).length > 0) {
+        overrideContextLimits(result.contextLimitOverrides);
+    }
+    return result;
+}
+
+/**
+ * Resolve both compaction limit and native context limit with explicit provenance
+ * (`live_checkpointer` / `live_catalog` / `static_verified` / `heuristic_guess` / `none`)
+ * using the shared `resolveModelLimitsWithProvenance` contract.
+ */
+export function resolveModelContextLimits(
+    model: string,
+    options?: { explicitOverride?: number | null },
+): ResolvedModelLimitsWithProvenance {
+    const clean = (model || '').trim();
+    const resolvedId = resolveModelId(clean) || clean;
+    const imageSpec = getImageGenerationSpec(clean);
+    const spec = imageSpec || (resolvedId ? ownValue(activeModelSpecs, resolvedId) : undefined);
+    const guessed = guessContextLimitSpec(resolvedId || clean);
+
+    const hasLiveCp = Boolean(
+        (resolvedId && liveCheckpointerOverrideIds.has(resolvedId))
+        || (clean && liveCheckpointerOverrideIds.has(clean)),
+    );
+    const hasLiveCatalog = Boolean(
+        (resolvedId && liveCatalogSyncedIds.has(resolvedId))
+        || (clean && liveCatalogSyncedIds.has(clean)),
+    );
+
+    const defaultTableLimit = (resolvedId ? ownValue(DEFAULT_CONTEXT_LIMITS, resolvedId) : undefined)
+        ?? (clean ? ownValue(DEFAULT_CONTEXT_LIMITS, clean) : undefined);
+    const explicitNativeOnly = Boolean(
+        (imageSpec && (!imageSpec.cpLimit || imageSpec.cpLimit <= 0))
+        || (spec !== undefined && spec.cpLimit === 0 && spec.maxTokens > 0),
+    );
+
+    const liveCpLimit = hasLiveCp
+        ? (defaultTableLimit && defaultTableLimit > 0
+            ? defaultTableLimit
+            : (spec && spec.cpLimit > 0 ? spec.cpLimit : null))
+        : null;
+    const liveCpThreshold = hasLiveCp && spec && spec.cpThreshold > 0 ? spec.cpThreshold : null;
+
+    const staticCpLimit = spec
+        ? spec.cpLimit
+        : (!hasLiveCp && defaultTableLimit && defaultTableLimit > 0 ? defaultTableLimit : null);
+    const staticCpThreshold = spec && spec.cpThreshold > 0 ? spec.cpThreshold : null;
+
+    return resolveModelLimitsWithProvenance({
+        customCompactionOverride: options?.explicitOverride ?? null,
+        liveCheckpointerLimit: liveCpLimit,
+        liveCheckpointerThreshold: liveCpThreshold,
+        staticCompactionLimit: staticCpLimit,
+        staticCompactionThreshold: staticCpThreshold,
+        heuristicCompactionLimit: guessed.cpLimit > 0 ? guessed.cpLimit : null,
+        heuristicCompactionThreshold: guessed.cpThreshold > 0 ? guessed.cpThreshold : null,
+        liveNativeLimit: hasLiveCatalog && spec && spec.maxTokens > 0 ? spec.maxTokens : null,
+        staticNativeLimit: !hasLiveCatalog && spec && spec.maxTokens > 0 ? spec.maxTokens : null,
+        heuristicNativeLimit: guessed.maxTokens > 0 ? guessed.maxTokens : null,
+        explicitNativeOnly,
+    });
 }
 
 /**
@@ -534,10 +655,10 @@ const FOUR_EFFORT_PICKER_LABELS: Record<string, readonly [string, string]> = {
     'Extra High': ['Extra High', '超高'],
 };
 
-/** Format four-effort Gemini 4 Neon/Hydrogen picker names for display while retaining API labels for storage. */
+/** Localize explicit picker effort suffixes for known model IDs without changing stored API labels. */
 export function localizePickerEffortLabel(modelId: string, label: string, language: Language): string {
-    if (!/^MODEL_PLACEHOLDER_M(?:53[2-5]|52[5-8])$/.test(modelId)) { return label; }
-    const match = label.match(/^(Gemini 4 (?:Neon|Hydrogen)) \((Low|Medium|High|XHigh|Extra(?: High)?)\)(\s+\(M\d+\))?$/);
+    if (!Object.hasOwn(activeModelSpecs, modelId)) { return label; }
+    const match = label.match(/^(Gemini 4 (?:Neon|Hydrogen|Carbon|Argon)) \((Low|Medium|High|XHigh|Extra(?: High)?)\)(\s+\(M\d+\))?$/);
     if (!match) { return label; }
     const [en, zh] = FOUR_EFFORT_PICKER_LABELS[match[2]];
     const effort = language === 'en' ? en : language === 'zh' ? zh : `${en} / ${zh}`;
@@ -554,10 +675,10 @@ export function localizeNeonPickerLabel(modelId: string, label: string, language
  * e.g. MODEL_PLACEHOLDER_M16 → "M16", MODEL_OPENAI_GPT_OSS_120B_MEDIUM → "OSS-120B"
  */
 export function getModelShortId(modelId: string): string {
+    const direct = extractModelShortId(modelId);
+    if (direct) { return direct; }
     const m = modelId.match(/MODEL_PLACEHOLDER_(M\d+)/);
-    if (m) { return m[1]; }
-    if (modelId === 'MODEL_OPENAI_GPT_OSS_120B_MEDIUM') { return 'OSS-120B'; }
-    return '';
+    return m ? m[1] : '';
 }
 
 /**
@@ -769,12 +890,12 @@ export interface ModelConfig {
 }
 
 export interface PlanLimits {
-    maxNumChatInputTokens: number;
-    maxNumPremiumChatMessages: number;
-    maxCustomChatInstructionCharacters: number;
-    maxNumPinnedContextItems: number;
-    maxLocalIndexSize: number;
-    monthlyFlexCreditPurchaseAmount: number;
+    maxNumChatInputTokens: number | null;
+    maxNumPremiumChatMessages: number | null;
+    maxCustomChatInstructionCharacters: number | null;
+    maxNumPinnedContextItems: number | null;
+    maxLocalIndexSize: number | null;
+    monthlyFlexCreditPurchaseAmount: number | null;
 }
 
 export interface TeamConfig {
@@ -858,8 +979,7 @@ export function updateModelDisplayNames(
 }
 
 function isConcreteAliasTarget(modelId: string): boolean {
-    const clean = modelId.trim();
-    return /^MODEL_[A-Z0-9_]+$/.test(clean) && !clean.includes('UNSPECIFIED');
+    return isPlatformModelId(modelId);
 }
 
 /**

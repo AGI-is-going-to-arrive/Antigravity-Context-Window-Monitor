@@ -745,16 +745,18 @@ export function extractWorkspaceId(line: string): string | null {
     return commandFlagAny(line, ['--workspace_id', '--workspace-id']);
 }
 
-/** The new IDE hosts the same Connect RPC API in an agy --hub process. */
-export function isAgyHubProcess(line: string): boolean {
+function matchesExecutablePattern(line: string, namePattern: string): boolean {
     const command = processCommandLine(line);
-    const executable = command.match(/^(?:"([^"\r\n]+)"|'([^'\r\n]+)'|((?:[A-Za-z]:[\\/]|\/)[^"\r\n]*?[\\/]agy(?:\.exe)?|agy(?:\.exe)?))(?=\s|$)/i);
-    if (!executable) { return false; }
-    const path = executable[1] || executable[2] || executable[3];
-    if (!/(?:^|[\\/])agy(?:\.exe)?$/i.test(path)) { return false; }
-    // ps does not quote executable paths with spaces. Accept those, but never
-    // mistake a shell/node command mentioning another executable for the hub.
-    if (!executable[1] && !executable[2] && /\s+(?:[-/]|['"]?[A-Za-z]:[\\/]|['"]\/)/.test(path)) { return false; }
+    const re = new RegExp(`^(?:"([^"\\r\\n]+)"|'([^'\\r\\n]+)'|((?:[A-Za-z]:[\\\\/]|\\/)[^"\\r\\n]*?[\\\\/]${namePattern}|${namePattern}))(?=\\s|$)`, 'i');
+    const m = command.match(re);
+    if (!m) { return false; }
+    const p = m[1] || m[2] || m[3];
+    if (!new RegExp(`(?:^|[\\\\/])${namePattern}$`, 'i').test(p)) { return false; }
+    return Boolean(m[1] || m[2] || !/\s+(?:[-/]|['"]?[A-Za-z]:[\\/]|['"]\/)/.test(p));
+}
+
+export function isAgyHubProcess(line: string): boolean {
+    if (!matchesExecutablePattern(line, 'agy(?:\\.exe)?')) { return false; }
     const args = commandArguments(line).map(arg => arg.toLowerCase());
     const hub = args.includes('--hub') || args.includes('--hub=true');
     const appDataDir = commandFlagAny(line, ['--app_data_dir', '--app-data-dir']);
@@ -768,26 +770,12 @@ export function extractHubPort(line: string): number | null {
     return Number.isSafeInteger(port) && port > 0 && port <= 65535 ? port : null;
 }
 
-/**
- * Recognize Antigravity App (2.0 / v2.34+) standalone hub Language Server:
- * `language_server` / `language_server.exe` launched with `--standalone` and
- * `--subclient_type hub` (which intentionally omits `--csrf_token` from argv
- * and publishes its CSRF token + ports in `~/.gemini/antigravity/daemon/hub_<port>.json`).
- */
 export function isAppStandaloneHubProcess(line: string): boolean {
-    const command = processCommandLine(line);
-    const executable = command.match(
-        /^(?:"([^"\r\n]+)"|'([^'\r\n]+)'|((?:[A-Za-z]:[\\/]|\/)[^"\r\n]*?[\\/]language_server(?:_[a-z0-9_]+)?(?:\.exe)?|language_server(?:_[a-z0-9_]+)?(?:\.exe)?))(?=\s|$)/i,
-    );
-    if (!executable) { return false; }
-    const exePath = executable[1] || executable[2] || executable[3];
-    if (!/(?:^|[\\/])language_server(?:_[a-z0-9_]+)?(?:\.exe)?$/i.test(exePath)) { return false; }
-    if (!executable[1] && !executable[2] && /\s+(?:[-/]|['"]?[A-Za-z]:[\\/]|['"]\/)/.test(exePath)) { return false; }
+    if (!matchesExecutablePattern(line, 'language_server(?:_[a-z0-9_]+)?(?:\\.exe)?')) { return false; }
     const args = commandArguments(line).map(arg => arg.toLowerCase());
     const standalone = args.includes('--standalone') || args.includes('--standalone=true');
     const subclientType = commandFlagAny(line, ['--subclient_type', '--subclient-type'])?.toLowerCase();
-    if (!standalone || subclientType !== 'hub') { return false; }
-    return line.toLowerCase().includes('antigravity');
+    return standalone && subclientType === 'hub' && line.toLowerCase().includes('antigravity');
 }
 
 /** Classify which Antigravity surface owns a discovered LS process line. */
@@ -914,15 +902,8 @@ function selectLegacyOrSharedLine(lines: readonly string[], workspaceUri?: strin
     return lines[0];
 }
 
-/** Recognize Antigravity's standalone language_server(.exe) without platform suffix. */
 function isStandaloneLanguageServer(line: string): boolean {
-    const command = processCommandLine(line);
-    const executable = command.match(/^(?:"([^"\r\n]+)"|'([^'\r\n]+)'|((?:[A-Za-z]:[\\/]|\/)[^"\r\n]*?[\\/]language_server(?:\.exe)?|language_server(?:\.exe)?))(?=\s|$)/i);
-    if (!executable) { return false; }
-    const path = executable[1] || executable[2] || executable[3];
-    if (!/(?:^|[\\/])language_server(?:\.exe)?$/i.test(path)) { return false; }
-    if (!executable[1] && !executable[2] && /\s+(?:[-/]|['"]?[A-Za-z]:[\\/]|['"]\/)/.test(path)) { return false; }
-    return line.toLowerCase().includes('antigravity');
+    return matchesExecutablePattern(line, 'language_server(?:\\.exe)?') && line.toLowerCase().includes('antigravity');
 }
 
 /**
@@ -951,6 +932,8 @@ export function filterLsProcessLines(psOutput: string, binaryOverride?: string):
 interface PortCandidate {
     port: number;
     ipv6Only?: boolean;
+    /** Explicit loopback family when socket inspection confirms PID ownership on `'127.0.0.1'` or `'::1'`. */
+    hostname?: '127.0.0.1' | '::1';
 }
 
 /**
@@ -979,18 +962,21 @@ function portCandidateFromAddressToken(token: string): PortCandidate | null {
     // skipping itself.
     if (port <= 0 || port > 65535) { return null; }
     const bare = m[1].replace(/%[^\]]*(?=\]?$)/, '');
-    return bare === '[::1]' ? { port, ipv6Only: true } : { port };
+    if (bare === '[::1]') {
+        return { port, ipv6Only: true, hostname: '::1' };
+    }
+    if (bare === '127.0.0.1') {
+        return { port, hostname: '127.0.0.1' };
+    }
+    if (bare === '::' || bare === '[::]') {
+        return { port, ipv6Only: true };
+    }
+    return { port };
 }
 
 /**
- * Extract the port from an `address:port` token, but only when a client on
- * loopback could actually reach it. Returns null for port 0, which is what a
- * foreign-address column reads as on a listening row.
+ * Extract the port from an `address:port` token, skipping unreachable addresses.
  */
-function portFromAddressToken(token: string): number | null {
-    return portCandidateFromAddressToken(token)?.port ?? null;
-}
-
 function extractPortCandidate(line: string): PortCandidate | null {
     const tokens = line.trim().split(/\s+/);
     for (let i = tokens.length - 1; i >= 0; i--) {
@@ -1099,10 +1085,12 @@ export function extractWslDistro(uri: string): string | null {
 
 function pushPortCandidate(list: PortCandidate[], candidate: PortCandidate | null): void {
     if (!candidate) { return; }
-    const existing = list.find(c => c.port === candidate.port);
-    if (existing) {
-        if (candidate.ipv6Only) { existing.ipv6Only = true; }
-    } else {
+    const existing = list.find(c =>
+        c.port === candidate.port
+        && (c.hostname ?? '') === (candidate.hostname ?? '')
+        && Boolean(c.ipv6Only) === Boolean(candidate.ipv6Only),
+    );
+    if (!existing) {
         list.push(candidate);
     }
 }
@@ -1112,20 +1100,24 @@ async function execCommandWithFallbacks(
     args: string[],
     timeout: number,
     signal?: AbortSignal,
-): Promise<string | null> {
+): Promise<{ stdout: string | null; emptyExit1: boolean }> {
     for (const bin of binaries) {
-        if (signal?.aborted) { return null; }
+        if (signal?.aborted) { return { stdout: null, emptyExit1: false }; }
         try {
             const result = await execFileAsync(bin, args, { encoding: 'utf-8', timeout, signal, windowsHide: true });
-            return result.stdout;
+            return { stdout: result.stdout, emptyExit1: false };
         } catch (e) {
-            if (signal?.aborted) { return null; }
-            const code = (e as NodeJS.ErrnoException).code;
-            if (code === 'ENOENT') { continue; }
-            return null;
+            if (signal?.aborted) { return { stdout: null, emptyExit1: false }; }
+            const err = e as NodeJS.ErrnoException & { stderr?: string };
+            if (err.code === 'ENOENT') { continue; }
+            // `lsof` exits with status 1 and empty stderr when the PID has zero matching sockets.
+            if (typeof err.code === 'number' && err.code === 1 && !String(err.stderr || '').trim()) {
+                return { stdout: '', emptyExit1: true };
+            }
+            return { stdout: null, emptyExit1: false };
         }
     }
-    return null;
+    return { stdout: null, emptyExit1: false };
 }
 
 /**
@@ -1154,17 +1146,20 @@ export function parseProcNetTcp(
         if (!Number.isSafeInteger(port) || port < 1 || port > 65535) { continue; }
 
         if (!isIpv6) {
-            if (hexAddr === '00000000' || hexAddr === '0100007F' || hexAddr === '7F000001') {
+            if (hexAddr === '0100007F' || hexAddr === '7F000001') {
+                pushPortCandidate(ports, { port, hostname: '127.0.0.1' });
+            } else if (hexAddr === '00000000') {
                 pushPortCandidate(ports, { port });
             }
         } else {
-            if (hexAddr === '00000000000000000000000000000000'
-                || hexAddr === '0000000000000000FFFF00000100007F'
-                || hexAddr === '00000000000000000000FFFF7F000001') {
-                pushPortCandidate(ports, { port });
+            if (hexAddr === '00000000000000000000000000000000') {
+                pushPortCandidate(ports, { port, ipv6Only: true });
             } else if (hexAddr === '00000000000000000000000001000000'
                 || hexAddr === '00000000000000000000000000000001') {
-                pushPortCandidate(ports, { port, ipv6Only: true });
+                pushPortCandidate(ports, { port, ipv6Only: true, hostname: '::1' });
+            } else if (hexAddr === '0000000000000000FFFF00000100007F'
+                || hexAddr === '00000000000000000000FFFF7F000001') {
+                pushPortCandidate(ports, { port, hostname: '127.0.0.1' });
             }
         }
     }
@@ -1360,7 +1355,7 @@ async function discoverWslLanguageServer(
             if (!pid || !csrfToken) { continue; }
             const found = await probeProcess(line, pid, csrfToken, async () => {
                 for (const ssBin of ['ss', '/usr/sbin/ss', '/bin/ss']) {
-                    if (signal?.aborted) { return []; }
+                    if (signal?.aborted) { return { ports: [], enumerated: false }; }
                     try {
                         const ssResult = await execFileAsync(wslExe, [
                             '-d', distro, '--', ssBin, '-tlnp'
@@ -1371,11 +1366,11 @@ async function discoverWslLanguageServer(
                                 pushPortCandidate(ports, extractPortCandidateFromSs(socket));
                             }
                         }
-                        if (ports.length > 0) { return ports; }
-                        return [];
+                        const validSs = ports.length > 0 || /\bState\b.*\bLocal\b/i.test(ssResult.stdout) || /^\s*LISTEN\b/m.test(ssResult.stdout);
+                        return { ports, enumerated: validSs };
                     } catch { /* try next ss path */ }
                 }
-                return [];
+                return { ports: [], enumerated: false };
             }, signal, log, hint?.port);
             if (found) { return found; }
         }
@@ -1475,7 +1470,7 @@ async function discoverWindowsProcesses(signal?: AbortSignal, log?: (msg: string
  */
 async function findListeningPortCandidates(
     pid: number, signal?: AbortSignal, log?: (msg: string) => void, forceNative = false,
-): Promise<PortCandidate[]> {
+): Promise<{ ports: PortCandidate[]; enumerated: boolean }> {
     // Windows (or WSL): use netstat -ano to find Windows host ports
     if (!forceNative && (process.platform === 'win32' || isWSL())) {
         const inWSL = isWSL();
@@ -1491,13 +1486,12 @@ async function findListeningPortCandidates(
                 ], { encoding: 'utf-8', timeout: 5000, signal, windowsHide: true });
                 const ports: PortCandidate[] = [];
                 for (const line of result.stdout.split('\n')) {
-                    // netstat -ano format: TCP    127.0.0.1:PORT    0.0.0.0:0    LISTENING    PID
-                    // CR-#62: exact PID-column match (previous endsWith matched 123 vs 1123).
                     if (netstatLineMatchesPid(line, pid)) {
                         pushPortCandidate(ports, extractPortCandidateFromNetstat(line));
                     }
                 }
-                return ports;
+                const validNetstat = ports.length > 0 || /\b(?:TCP|UDP|Proto)\b/i.test(result.stdout);
+                return { ports, enumerated: validNetstat };
             } catch (e) {
                 const code = (e as NodeJS.ErrnoException).code ?? (e as Error).message ?? 'error';
                 if (code === 'ENOENT' && i + 1 < netstatCandidates.length) {
@@ -1506,56 +1500,68 @@ async function findListeningPortCandidates(
                 log?.(`netstat failed (${code}); exe=${candidate}`);
             }
         }
-        return [];
+        return { ports: [], enumerated: false };
     }
 
+    let enumerated = false;
     // macOS + Linux: try lsof first (on macOS also fall back to /usr/sbin/lsof when PATH omits /usr/sbin)
     const lsofBins = process.platform === 'darwin' ? ['lsof', '/usr/sbin/lsof'] : ['lsof'];
-    const lsofOut = await execCommandWithFallbacks(
+    const lsofRes = await execCommandWithFallbacks(
         lsofBins,
         ['-nP', '-iTCP', '-sTCP:LISTEN', '-a', '-p', String(pid)],
         5000,
         signal,
     );
-    if (lsofOut && lsofOut.trim()) {
+    if (lsofRes.emptyExit1) { enumerated = true; }
+    if (lsofRes.stdout && lsofRes.stdout.trim()) {
         const ports: PortCandidate[] = [];
-        for (const line of lsofOut.trim().split('\n')) {
+        for (const line of lsofRes.stdout.trim().split('\n')) {
             pushPortCandidate(ports, extractPortCandidate(line));
         }
         if (ports.length > 0) {
-            return ports;
+            return { ports, enumerated: true };
+        }
+        if (/^\s*COMMAND\s+PID\b/m.test(lsofRes.stdout)) {
+            enumerated = true;
         }
     }
 
     // Linux fallback: ss command (installed by default via iproute2), with absolute path fallbacks
     if (process.platform === 'linux') {
-        const ssOut = await execCommandWithFallbacks(
+        const ssRes = await execCommandWithFallbacks(
             ['ss', '/usr/sbin/ss', '/bin/ss'],
             ['-tlnp'],
             5000,
             signal,
         );
-        if (ssOut) {
+        if (ssRes.stdout) {
             const ports: PortCandidate[] = [];
-            for (const line of ssOut.split('\n')) {
-                // ss output includes process info like: users:(("language_server_linux",pid=1234,fd=5))
+            for (const line of ssRes.stdout.split('\n')) {
                 if (line.includes(`pid=${pid},`) || line.includes(`pid=${pid})`)) {
                     pushPortCandidate(ports, extractPortCandidateFromSs(line));
                 }
             }
             if (ports.length > 0) {
-                return ports;
+                return { ports, enumerated: true };
+            }
+            if (/\bState\b.*\bLocal\b/i.test(ssRes.stdout) || /^\s*LISTEN\b/m.test(ssRes.stdout)) {
+                enumerated = true;
             }
         }
 
         // Minimal Linux fallback: inspect /proc/<pid>/fd + /proc/net/tcp{,6} directly
         const procPorts = findListeningPortsFromProc(pid);
         if (procPorts.length > 0) {
-            return procPorts;
+            return { ports: procPorts, enumerated: true };
         }
+        try {
+            readdirSync(join('/proc', String(pid), 'fd'));
+            readFileSync(join('/proc', 'net', 'tcp'), 'utf-8');
+            enumerated = true;
+        } catch { /* proc unreadable */ }
     }
 
-    return [];
+    return { ports: [], enumerated };
 }
 
 /** Keep workspace/shared-server preference, but do not let a stale PID hide a live one. */
@@ -1624,14 +1630,34 @@ async function probeSchemeWithLoopbackFallback(
     allowIpv6Fallback: boolean,
     signal: AbortSignal | undefined,
     diagnostics: string[],
+    preferredHostname?: '127.0.0.1' | '::1',
+    preferIpv6First = false,
 ): Promise<LSInfo | null> {
     if (signal?.aborted) { return null; }
+    // When PID socket inspection proved an explicit `[::1]` or IPv6 `[::]` listener, probe `::1` first
+    // so we never send the CSRF header to an unrelated IPv4 listener on the same port.
+    if (preferredHostname === '::1' || preferIpv6First) {
+        const v6 = await probePortWithDetail(port, csrfToken, useTls, signal, '::1');
+        if (v6.ok) {
+            return { pid, csrfToken, port, useTls, hostname: '::1' };
+        }
+        diagnostics.push(`${useTls ? 'https' : 'http'}://[::1]:${port} (${v6.summary})`);
+        if (preferredHostname === '::1' || !v6.connectionRefused || signal?.aborted) {
+            return null;
+        }
+        const v4AfterV6 = await probePortWithDetail(port, csrfToken, useTls, signal, '127.0.0.1');
+        if (v4AfterV6.ok) {
+            return { pid, csrfToken, port, useTls };
+        }
+        diagnostics.push(`${useTls ? 'https' : 'http'}://127.0.0.1:${port} (${v4AfterV6.summary})`);
+        return null;
+    }
     const v4 = await probePortWithDetail(port, csrfToken, useTls, signal, '127.0.0.1');
     if (v4.ok) {
         return { pid, csrfToken, port, useTls };
     }
     diagnostics.push(`${useTls ? 'https' : 'http'}://127.0.0.1:${port} (${v4.summary})`);
-    if ((allowIpv6Fallback || v4.connectionRefused) && !signal?.aborted) {
+    if (preferredHostname !== '127.0.0.1' && (allowIpv6Fallback || v4.connectionRefused) && !signal?.aborted) {
         const v6 = await probePortWithDetail(port, csrfToken, useTls, signal, '::1');
         if (v6.ok) {
             return { pid, csrfToken, port, useTls, hostname: '::1' };
@@ -1647,7 +1673,7 @@ async function probeProcess(
     line: string,
     pid: number,
     csrfToken: string,
-    getPorts: () => Promise<PortCandidate[]>,
+    getPorts: () => Promise<{ ports: PortCandidate[]; enumerated: boolean }>,
     signal?: AbortSignal,
     log?: (msg: string) => void,
     hintPort?: number,
@@ -1656,36 +1682,52 @@ async function probeProcess(
     if (signal?.aborted) { return null; }
     const hub = isAgyHubProcess(line);
     const declaredPort = hub ? extractHubPort(line) : null;
-    const attempted = new Set<number>();
+    const attempted = new Set<string>();
     const diagnostics: string[] = [];
     const tryPort = async (candidate: PortCandidate, preferHttp: boolean): Promise<LSInfo | null> => {
-        const { port, ipv6Only } = candidate;
-        if (attempted.has(port) || signal?.aborted) { return null; }
-        attempted.add(port);
-        attemptedKeys?.add(`${port}:${csrfToken}`);
-        // agy serves its primary/declared hub port over HTTP, while secondary listening ports
-        // (e.g. agy >=1.5.14 paired httpsPort) and legacy language_server processes typically use TLS.
+        const { port, ipv6Only, hostname } = candidate;
+        const familyKey = hostname ?? (ipv6Only ? 'dual-v6' : 'any');
+        if (signal?.aborted) { return null; }
         for (const useTls of preferHttp ? [false, true] : [true, false]) {
+            const scheme = useTls ? 'tls' : 'http';
+            const attemptKey = `${familyKey}:${scheme}:${port}`;
+            if (attempted.has(attemptKey) || signal?.aborted) { continue; }
+            const ipv4AlreadyTried = attempted.has(`any:${scheme}:${port}`) || attempted.has(`127.0.0.1:${scheme}:${port}`);
+            const effectiveHost: '127.0.0.1' | '::1' | undefined = hostname ?? (ipv6Only && ipv4AlreadyTried ? '::1' : undefined);
+            attempted.add(attemptKey);
+            if (!effectiveHost) {
+                attemptedKeys?.add(`${port}:${csrfToken}`);
+            } else {
+                attemptedKeys?.add(`${effectiveHost}:${port}:${csrfToken}:${scheme}`);
+            }
             const found = await probeSchemeWithLoopbackFallback(
-                port, csrfToken, useTls, pid, !!ipv6Only, signal, diagnostics,
+                port, csrfToken, useTls, pid, !!ipv6Only, signal, diagnostics, effectiveHost, Boolean(ipv6Only && !hostname),
             );
             if (found) { return found; }
         }
         return null;
     };
     const primaryPort = declaredPort !== null ? declaredPort : hintPort;
-    if (primaryPort !== undefined) {
-        // Declared --hub-port (or IDE-hinted port for ephemeral --hub-port=0 / omitted port):
-        // try before socket tooling; prefer HTTP for agy hubs and TLS for legacy servers.
-        const found = await tryPort({ port: primaryPort }, hub);
-        if (found) { return found; }
-    }
     if (signal?.aborted) { return null; }
-    for (const candidate of await getPorts()) {
-        // When a hub's declared/hinted primary port already failed, secondary ports
-        // (e.g. agy >=1.5.14 paired httpsPort) typically use TLS; trying TLS first avoids
-        // spurious HTTP-to-HTTPS handshake errors in hub stderr.
-        const found = await tryPort(candidate, hub && primaryPort === undefined);
+    const { ports: ownedPorts, enumerated } = await getPorts();
+    if (ownedPorts.length > 0) {
+        const primaryOwned = primaryPort !== undefined
+            ? ownedPorts.filter(c => c.port === primaryPort)
+            : [];
+        const secondaryOwned = primaryPort !== undefined
+            ? ownedPorts.filter(c => c.port !== primaryPort)
+            : ownedPorts;
+        for (const candidate of primaryOwned) {
+            const found = await tryPort(candidate, hub);
+            if (found) { return found; }
+        }
+        for (const candidate of secondaryOwned) {
+            const found = await tryPort(candidate, hub && primaryPort === undefined);
+            if (found) { return found; }
+        }
+    } else if (!enumerated && primaryPort !== undefined) {
+        // Fallback ONLY when OS socket tooling is unavailable (never when enumeration confirmed 0 owned sockets).
+        const found = await tryPort({ port: primaryPort }, hub);
         if (found) { return found; }
     }
     if (diagnostics.length > 0) {

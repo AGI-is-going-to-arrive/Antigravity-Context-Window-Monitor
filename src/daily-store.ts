@@ -6,17 +6,25 @@
 import type { ActivityArchive, ActivitySummary } from './activity-tracker';
 import type { GMSummary, GMModelStats } from './gm-tracker';
 import {
+    UNATTRIBUTED_WORKSPACE_KEY,
+    addCallToWorkspaceBreakdown,
+    addSurfaceStats,
+    canonicalLogicalCallId,
     cloneSurfaceBreakdown,
+    cloneWorkspaceBreakdown,
+    dominantUsageSurface,
     normalizeUsageSurface,
+    normalizeWorkspaceKey,
     type SurfaceUsageStats,
     type UsageSurface,
+    type WorkspaceUsageStats,
 } from './daily-ledger';
 import { normalizeModelDisplayName } from './models';
 import type { ModelPricing } from './pricing-store';
 import { DEFAULT_PRICING, findPricingForDate, costFromTokens } from './pricing-store';
 import { MIN_OUTPUT_TOKENS_FOR_SPEED, MIN_STREAM_SECONDS } from './telemetry-metrics';
 
-export type { SurfaceUsageStats, UsageSurface };
+export type { SurfaceUsageStats, UsageSurface, WorkspaceUsageStats };
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -54,6 +62,38 @@ export interface GMModelCycleStats {
     avgGenTokPerSec?: number;
     /** Token-weighted prompt cache hit rate: cacheRead / (input + cacheRead + cacheCreation) */
     tokenCacheHitRate?: number;
+}
+
+/** Per-call record persisted for idempotent late-day merging & cross-host 3-way reconciliation. */
+export interface DailyMergedLateCall {
+    /** Original rollover projection retained only for the two most recent archived dates. */
+    fromDaySnapshot?: true;
+    callId: string;
+    createdAt: string;
+    createdAtMs: number;
+    modelId: string;
+    modelKey: string;
+    inputTokens: number;
+    outputTokens: number;
+    thinkingTokens: number;
+    cacheReadTokens: number;
+    cacheCreationTokens: number;
+    credits: number;
+    estimatedCost: number;
+    ttftSeconds?: number;
+    streamingSeconds?: number;
+    surface?: UsageSurface;
+    accountEmail?: string;
+    /** Account identifier preserved across late-day merge (optional for v1 compat). */
+    account?: string;
+    /** Host/remote authority preserved across late-day merge (optional for v1 compat). */
+    authority?: string;
+    /** Conversation cascadeId preserved across late-day merge (optional for v1 compat). */
+    cascadeId?: string;
+    /** Canonical workspace key captured at ingestion time (optional for v1 compat). */
+    workspace?: string;
+    /** True when the call's model had no resolved pricing. */
+    unpriced?: boolean;
 }
 
 /** A single quota-cycle snapshot within a day */
@@ -96,6 +136,12 @@ export interface DailyCycleEntry {
     surface?: UsageSurface;
     /** Per-surface split when multiple surfaces contributed to the same archived cycle */
     surfaceBreakdown?: Partial<Record<UsageSurface, SurfaceUsageStats>>;
+    /** Per-workspace attribution breakdown preserved across archival & late-day merge */
+    workspaceBreakdown?: Record<string, WorkspaceUsageStats>;
+    /** Canonical logical call IDs already included in this archived cycle (for idempotent late-call dedup) */
+    recordedCallIds?: string[];
+    /** Late-merged calls keyed by canonical logical call ID (enables lossless App + IDE 3-way merge) */
+    lateMergedCalls?: Record<string, DailyMergedLateCall>;
     /** Runtime-only flag for live merged ledger cycles (never persisted to DailyStore) */
     isLive?: boolean;
 }
@@ -104,6 +150,40 @@ export interface DailyCycleEntry {
 export interface DailyRecord {
     date: string;                    // 'YYYY-MM-DD'
     cycles: DailyCycleEntry[];
+}
+
+/** Project all persisted identity-bearing keys and values before rendering a masked archive. */
+export function redactDailyRecordIdentities(record: DailyRecord, handle: (value: string) => string): DailyRecord {
+    const workspaceHandle = (workspace: string) =>
+        workspace === UNATTRIBUTED_WORKSPACE_KEY ? workspace : handle(workspace);
+    return {
+        date: record.date,
+        cycles: record.cycles.map(cycle => ({
+            ...cycle,
+            ...(cycle.accountEmail ? { accountEmail: handle(cycle.accountEmail) } : {}),
+            ...(cycle.recordedCallIds ? { recordedCallIds: cycle.recordedCallIds.map(handle) } : {}),
+            ...(cycle.workspaceBreakdown ? {
+                workspaceBreakdown: Object.fromEntries(Object.entries(cycle.workspaceBreakdown).map(([workspace, stats]) => [
+                    workspaceHandle(workspace),
+                    { ...stats, ...(stats.authority ? { authority: handle(stats.authority) } : {}) },
+                ])),
+            } : {}),
+            ...(cycle.lateMergedCalls ? {
+                lateMergedCalls: Object.fromEntries(Object.entries(cycle.lateMergedCalls).map(([key, call]) => [
+                    handle(key),
+                    {
+                        ...call,
+                        callId: handle(call.callId),
+                        ...(call.accountEmail ? { accountEmail: handle(call.accountEmail) } : {}),
+                        ...(call.account ? { account: handle(call.account) } : {}),
+                        ...(call.authority ? { authority: handle(call.authority) } : {}),
+                        ...(call.workspace ? { workspace: workspaceHandle(call.workspace) } : {}),
+                        ...(call.cascadeId ? { cascadeId: handle(call.cascadeId) } : {}),
+                    },
+                ])),
+            } : {}),
+        })),
+    };
 }
 
 /** Month-cell summary for calendar grid rendering */
@@ -280,7 +360,31 @@ export interface CostBackfillOptions {
 export interface DailySnapshotMetadata {
     surface?: UsageSurface;
     surfaceBreakdown?: Partial<Record<UsageSurface, SurfaceUsageStats>>;
+    workspaceBreakdown?: Record<string, WorkspaceUsageStats>;
     accountEmail?: string;
+    /** Recent rollover contributions used to reconcile independent App / IDE archives. */
+    snapshotCalls?: DailyMergedLateCall[];
+    /** Canonical logical call IDs already included in this archived snapshot (for late-call dedup). */
+    recordedCallIds?: string[];
+}
+
+/** Result of merging late-arriving calls into a historical date in {@link DailyStore}. */
+export interface MergeLateDayCallsResult {
+    /** Number of truly new unique calls merged (0 on duplicate replay). */
+    appliedCalls: number;
+    /** Canonical logical call IDs newly merged into the archived day. */
+    appliedCallIds: string[];
+    /** True when the synchronous persistence handoff did not throw (or no write was needed). */
+    persisted: boolean;
+    /** Resolves true once backing storage persistence confirms commit (false on rejection or uncommitted receipt). */
+    persistPromise: Promise<boolean>;
+}
+
+/** Result of awaiting an async late-day merge & persistence confirmation. */
+export interface MergeLateDayCallsAsyncResult {
+    appliedCalls: number;
+    appliedCallIds: string[];
+    committed: boolean;
 }
 
 /** Optional initialization parameters for {@link DailyStore.init}. */
@@ -321,19 +425,24 @@ export function computeAdditiveTokens(t: {
         + safeNonNeg(t.outputTokens);
 }
 
+function hasCompleteGmModelStats(cycle: DailyCycleEntry): boolean {
+    const rows = Object.values(cycle.gmModelStats ?? {});
+    return rows.length > 0 && rows.reduce((sum, row) => sum + safeNonNeg(row.calls), 0) >= safeNonNeg(cycle.gmTotalCalls);
+}
+
 /**
  * Compute additive token totals and breakdown for a single {@link DailyCycleEntry}.
  * Uses `gmModelStats` when present (most exact), with graceful fallback to cycle-level
  * fields for legacy archived records.
  */
 export function computeCycleTokenTotals(cycle: DailyCycleEntry): AdditiveTokenTotals {
-    if (cycle.gmModelStats && Object.keys(cycle.gmModelStats).length > 0) {
+    if (hasCompleteGmModelStats(cycle)) {
         let inputTokens = 0;
         let outputTokens = 0;
         let thinkingTokens = 0;
         let cacheReadTokens = 0;
         let cacheCreationTokens = 0;
-        for (const gm of Object.values(cycle.gmModelStats)) {
+        for (const gm of Object.values(cycle.gmModelStats!)) {
             inputTokens += safeNonNeg(gm.inputTokens);
             outputTokens += safeNonNeg(gm.outputTokens);
             thinkingTokens += safeNonNeg(gm.thinkingTokens);
@@ -390,6 +499,312 @@ export function getCycleSurfaces(cycle: DailyCycleEntry): UsageSurface[] {
     return [...out];
 }
 
+/** Collect all canonical logical call IDs already recorded across a cycle. */
+export function collectCycleRecordedCallIds(cycle: DailyCycleEntry): Set<string> {
+    const ids = new Set<string>();
+    if (Array.isArray(cycle.recordedCallIds)) {
+        for (const id of cycle.recordedCallIds) {
+            if (typeof id === 'string' && id) {
+                ids.add(id);
+                ids.add(canonicalLogicalCallId(id));
+            }
+        }
+    }
+    if (cycle.lateMergedCalls && typeof cycle.lateMergedCalls === 'object') {
+        for (const [key, call] of Object.entries(cycle.lateMergedCalls)) {
+            if (key) {
+                ids.add(key);
+                ids.add(canonicalLogicalCallId(key));
+            }
+            if (call && typeof call.callId === 'string' && call.callId) {
+                ids.add(call.callId);
+                ids.add(canonicalLogicalCallId(call.callId));
+            }
+        }
+    }
+    return ids;
+}
+
+function cloneDailyCycleEntry(cycle: DailyCycleEntry): DailyCycleEntry {
+    const clonedModelStats = cycle.modelStats
+        ? Object.fromEntries(Object.entries(cycle.modelStats).map(([k, v]) => [k, { ...v }]))
+        : undefined;
+    const clonedGmModelStats = cycle.gmModelStats
+        ? Object.fromEntries(Object.entries(cycle.gmModelStats).map(([k, v]) => [k, { ...v }]))
+        : undefined;
+    const clonedSurfaceBreakdown = cloneSurfaceBreakdown(cycle.surfaceBreakdown);
+    const clonedWorkspaceBreakdown = cloneWorkspaceBreakdown(cycle.workspaceBreakdown);
+    const clonedLateCalls = cycle.lateMergedCalls
+        ? Object.fromEntries(Object.entries(cycle.lateMergedCalls).map(([k, v]) => [k, { ...v }]))
+        : undefined;
+    return {
+        ...cycle,
+        modelNames: [...(cycle.modelNames || [])],
+        ...(cycle.triggeredBy ? { triggeredBy: [...cycle.triggeredBy] } : {}),
+        ...(clonedModelStats ? { modelStats: clonedModelStats } : {}),
+        ...(clonedGmModelStats ? { gmModelStats: clonedGmModelStats } : {}),
+        ...(clonedSurfaceBreakdown ? { surfaceBreakdown: clonedSurfaceBreakdown } : {}),
+        ...(clonedWorkspaceBreakdown ? { workspaceBreakdown: clonedWorkspaceBreakdown } : {}),
+        ...(Array.isArray(cycle.recordedCallIds) ? { recordedCallIds: [...cycle.recordedCallIds] } : {}),
+        ...(clonedLateCalls ? { lateMergedCalls: clonedLateCalls } : {}),
+    };
+}
+
+/**
+ * Pure, idempotent merge of late-arriving calls into an existing {@link DailyCycleEntry}.
+ * Preserves ALL activity stats and prior GM calls, deduplicating strictly by canonical
+ * logical call ID (independent of mutable array indices).
+ */
+export function mergeLateCallsIntoCycle(
+    existingCycle: DailyCycleEntry,
+    calls: readonly DailyMergedLateCall[],
+    options?: {
+        defaultSurface?: UsageSurface;
+        externalSeenIds?: ReadonlySet<string>;
+    },
+): { cycle: DailyCycleEntry; appliedIds: string[] } {
+    const knownIds = collectCycleRecordedCallIds(existingCycle);
+    if (options?.externalSeenIds) {
+        for (const id of options.externalSeenIds) {
+            knownIds.add(id);
+            knownIds.add(canonicalLogicalCallId(id));
+        }
+    }
+
+    const toApply: Array<{ canonicalId: string; call: DailyMergedLateCall }> = [];
+    for (const rawCall of calls) {
+        if (!rawCall || !rawCall.callId) { continue; }
+        const canonicalId = canonicalLogicalCallId(rawCall.callId);
+        if (!canonicalId || knownIds.has(rawCall.callId) || knownIds.has(canonicalId)) {
+            continue;
+        }
+        knownIds.add(rawCall.callId);
+        knownIds.add(canonicalId);
+        toApply.push({ canonicalId, call: rawCall });
+    }
+
+    if (toApply.length === 0) {
+        return { cycle: existingCycle, appliedIds: [] };
+    }
+
+    const next = cloneDailyCycleEntry(existingCycle);
+    const fallbackSurface = normalizeUsageSurface(options?.defaultSurface);
+
+    const priorGmCalls = safeNonNeg(next.gmTotalCalls);
+    const priorGmTokens = computeCycleTokenTotals(next);
+    const priorGmCredits = safeNonNeg(next.gmTotalCredits);
+    const priorGmCost = safeNonNeg(next.estimatedCost);
+
+    const hasIncomingSurface = toApply.some(({ call }) =>
+        normalizeUsageSurface(call.surface ?? fallbackSurface) !== 'unknown',
+    );
+    const hasIncomingWorkspace = toApply.some(({ call }) =>
+        Boolean(call.workspace || call.authority),
+    );
+    const priorSurfDelta: SurfaceUsageStats = {
+        calls: priorGmCalls, inputTokens: priorGmTokens.inputTokens, outputTokens: priorGmTokens.outputTokens,
+        thinkingTokens: priorGmTokens.thinkingTokens, cacheReadTokens: priorGmTokens.cacheReadTokens,
+        cacheCreationTokens: priorGmTokens.cacheCreationTokens, credits: priorGmCredits, estimatedCost: priorGmCost,
+    };
+    if ((hasIncomingSurface || next.surfaceBreakdown || (next.surface && next.surface !== 'unknown')) && !next.surfaceBreakdown && priorGmCalls > 0) {
+        next.surfaceBreakdown = { [normalizeUsageSurface(next.surface)]: { ...priorSurfDelta } };
+    }
+    if ((hasIncomingWorkspace || next.workspaceBreakdown) && !next.workspaceBreakdown && priorGmCalls > 0) {
+        const priorSurfaces = cloneSurfaceBreakdown(next.surfaceBreakdown)
+            ?? { [normalizeUsageSurface(next.surface)]: { ...priorSurfDelta } };
+        next.workspaceBreakdown = {
+            [UNATTRIBUTED_WORKSPACE_KEY]: {
+                calls: priorGmCalls, inputTokens: priorGmTokens.inputTokens, outputTokens: priorGmTokens.outputTokens,
+                thinkingTokens: priorGmTokens.thinkingTokens, cacheReadTokens: priorGmTokens.cacheReadTokens,
+                cacheCreationTokens: priorGmTokens.cacheCreationTokens, credits: priorGmCredits,
+                knownCostUsd: priorGmCost, unpricedCalls: 0, bySurface: priorSurfaces,
+            },
+        };
+    }
+
+    let addedInput = 0;
+    let addedOutput = 0;
+    let addedThinking = 0;
+    let addedCacheRead = 0;
+    let addedCacheCreation = 0;
+    let runningGmCalls = priorGmCalls;
+    let runningGmCredits = priorGmCredits;
+    let runningCost = priorGmCost;
+
+    if (!next.gmModelStats) { next.gmModelStats = {}; }
+    if (!next.recordedCallIds) { next.recordedCallIds = []; }
+    if (!next.lateMergedCalls) { next.lateMergedCalls = {}; }
+
+    const existingIdSet = new Set(next.recordedCallIds.map(id => canonicalLogicalCallId(id)));
+    const appliedIds: string[] = [];
+
+    for (const { canonicalId, call } of toApply) {
+        const inTok = safeNonNeg(call.inputTokens);
+        const outTok = safeNonNeg(call.outputTokens);
+        const thinkTok = safeNonNeg(call.thinkingTokens);
+        const cacheRead = safeNonNeg(call.cacheReadTokens);
+        const cacheCreate = safeNonNeg(call.cacheCreationTokens);
+        const credits = safeNonNeg(call.credits);
+        const cost = safeNonNeg(call.estimatedCost);
+        const callSurface = normalizeUsageSurface(call.surface ?? fallbackSurface);
+
+        runningGmCalls += 1;
+        runningGmCredits += credits;
+        addedInput += inTok;
+        addedOutput += outTok;
+        addedThinking += thinkTok;
+        addedCacheRead += cacheRead;
+        addedCacheCreation += cacheCreate;
+        runningCost += cost;
+
+        // Per-model GM stats incremental update
+        const modelKey = (call.modelKey || call.modelId || 'Unknown').trim() || 'Unknown';
+        const prevMs = next.gmModelStats[modelKey];
+        if (!prevMs) {
+            const promptTotal = inTok + cacheRead + cacheCreate;
+            const entry: GMModelCycleStats = {
+                calls: 1,
+                credits,
+                inputTokens: inTok,
+                outputTokens: outTok,
+                thinkingTokens: thinkTok,
+                avgTTFT: typeof call.ttftSeconds === 'number' && Number.isFinite(call.ttftSeconds) && call.ttftSeconds > 0 ? call.ttftSeconds : 0,
+                cacheHitRate: cacheRead > 0 ? 1 : 0,
+                cacheReadTokens: cacheRead,
+                cacheCreationTokens: cacheCreate,
+                ...(cost > 0 ? { estimatedCost: cost } : {}),
+            };
+            if (typeof call.streamingSeconds === 'number' && Number.isFinite(call.streamingSeconds) && call.streamingSeconds > 0) {
+                entry.avgStreaming = call.streamingSeconds;
+                if (call.streamingSeconds >= MIN_STREAM_SECONDS && outTok >= MIN_OUTPUT_TOKENS_FOR_SPEED) {
+                    entry.avgGenTokPerSec = outTok / call.streamingSeconds;
+                }
+            }
+            if (promptTotal > 0) {
+                entry.tokenCacheHitRate = Math.min(1, Math.max(0, cacheRead / promptTotal));
+            }
+            next.gmModelStats[modelKey] = entry;
+        } else {
+            const prevCalls = safeNonNeg(prevMs.calls);
+            const nextCalls = prevCalls + 1;
+            prevMs.calls = nextCalls;
+            prevMs.credits = safeNonNeg(prevMs.credits) + credits;
+            prevMs.inputTokens = safeNonNeg(prevMs.inputTokens) + inTok;
+            prevMs.outputTokens = safeNonNeg(prevMs.outputTokens) + outTok;
+            prevMs.thinkingTokens = safeNonNeg(prevMs.thinkingTokens) + thinkTok;
+            prevMs.cacheReadTokens = safeNonNeg(prevMs.cacheReadTokens) + cacheRead;
+            prevMs.cacheCreationTokens = safeNonNeg(prevMs.cacheCreationTokens) + cacheCreate;
+            if (cost > 0) {
+                prevMs.estimatedCost = safeNonNeg(prevMs.estimatedCost) + cost;
+            }
+            if (typeof call.ttftSeconds === 'number' && Number.isFinite(call.ttftSeconds) && call.ttftSeconds > 0) {
+                prevMs.avgTTFT = prevMs.avgTTFT > 0
+                    ? ((prevMs.avgTTFT * prevCalls) + call.ttftSeconds) / nextCalls
+                    : call.ttftSeconds;
+            }
+            if (typeof call.streamingSeconds === 'number' && Number.isFinite(call.streamingSeconds) && call.streamingSeconds > 0) {
+                const prevStream = safeNonNeg(prevMs.avgStreaming);
+                prevMs.avgStreaming = prevStream > 0
+                    ? ((prevStream * prevCalls) + call.streamingSeconds) / nextCalls
+                    : call.streamingSeconds;
+                if (call.streamingSeconds >= MIN_STREAM_SECONDS && outTok >= MIN_OUTPUT_TOKENS_FOR_SPEED) {
+                    const prevSpeed = safeNonNeg(prevMs.avgGenTokPerSec);
+                    if (prevSpeed > 0 && prevStream > 0 && prevCalls > 0) {
+                        const prevTotalStream = prevStream * prevCalls;
+                        const prevTimedOut = prevSpeed * prevTotalStream;
+                        prevMs.avgGenTokPerSec = (prevTimedOut + outTok) / (prevTotalStream + call.streamingSeconds);
+                    } else {
+                        prevMs.avgGenTokPerSec = outTok / call.streamingSeconds;
+                    }
+                }
+            }
+            const prevCacheHits = Math.round(safeNonNeg(prevMs.cacheHitRate) * prevCalls);
+            prevMs.cacheHitRate = Math.min(1, (prevCacheHits + (cacheRead > 0 ? 1 : 0)) / nextCalls);
+            const promptTotal = prevMs.inputTokens + (prevMs.cacheReadTokens || 0) + (prevMs.cacheCreationTokens || 0);
+            if (promptTotal > 0) {
+                prevMs.tokenCacheHitRate = Math.min(1, Math.max(0, (prevMs.cacheReadTokens || 0) / promptTotal));
+            }
+        }
+
+        // Per-surface stats update
+        if (callSurface !== 'unknown' || next.surfaceBreakdown) {
+            if (!next.surfaceBreakdown) { next.surfaceBreakdown = {}; }
+            const sb = next.surfaceBreakdown[callSurface] || {
+                calls: 0, inputTokens: 0, outputTokens: 0, thinkingTokens: 0,
+                cacheReadTokens: 0, cacheCreationTokens: 0, credits: 0, estimatedCost: 0,
+            };
+            addSurfaceStats(sb, {
+                calls: 1, inputTokens: inTok, outputTokens: outTok, thinkingTokens: thinkTok,
+                cacheReadTokens: cacheRead, cacheCreationTokens: cacheCreate, credits, estimatedCost: cost,
+            });
+            next.surfaceBreakdown[callSurface] = sb;
+        }
+
+        // Per-workspace attribution update (idempotent per unique logical call)
+        if (hasIncomingWorkspace || next.workspaceBreakdown) {
+            if (!next.workspaceBreakdown) { next.workspaceBreakdown = {}; }
+            addCallToWorkspaceBreakdown(
+                next.workspaceBreakdown,
+                normalizeWorkspaceKey(call.workspace, call.authority),
+                {
+                    inputTokens: inTok, outputTokens: outTok, thinkingTokens: thinkTok,
+                    cacheReadTokens: cacheRead, cacheCreationTokens: cacheCreate,
+                    credits, estimatedCost: cost, unpriced: call.unpriced, authority: call.authority, surface: callSurface,
+                },
+                callSurface,
+            );
+        }
+
+        if (!existingIdSet.has(canonicalId)) {
+            existingIdSet.add(canonicalId);
+            next.recordedCallIds.push(canonicalId);
+        }
+        next.lateMergedCalls[canonicalId] = {
+            ...call,
+            callId: canonicalId,
+            ...(callSurface !== 'unknown' ? { surface: callSurface } : {}),
+        };
+        appliedIds.push(canonicalId);
+    }
+
+    const hasPriorGmModelStats = hasCompleteGmModelStats(existingCycle);
+    const nextCacheRead = (hasPriorGmModelStats ? priorGmTokens.cacheReadTokens : safeNonNeg(existingCycle.gmTotalCacheRead)) + addedCacheRead;
+    const nextCacheCreation = (hasPriorGmModelStats ? priorGmTokens.cacheCreationTokens : safeNonNeg(existingCycle.gmTotalCacheCreation)) + addedCacheCreation;
+    const nextThinking = (hasPriorGmModelStats ? priorGmTokens.thinkingTokens : safeNonNeg(existingCycle.gmTotalThinkingTokens)) + addedThinking;
+    const priorGmInOut = hasPriorGmModelStats
+        ? priorGmTokens.inputTokens + priorGmTokens.outputTokens
+        : safeNonNeg(existingCycle.gmTotalTokens);
+
+    next.gmTotalCalls = runningGmCalls;
+    next.gmTotalCredits = runningGmCredits;
+    next.gmTotalTokens = priorGmInOut + addedInput + addedOutput;
+    const addedAdditive = computeAdditiveTokens({
+        inputTokens: addedInput,
+        outputTokens: addedOutput,
+        cacheReadTokens: addedCacheRead,
+        cacheCreationTokens: addedCacheCreation,
+    });
+    const priorAdditive = hasPriorGmModelStats
+        ? priorGmTokens.totalTokens
+        : (safeNonNeg(existingCycle.gmTotalAllTokens)
+            || (priorGmInOut + safeNonNeg(existingCycle.gmTotalCacheRead) + safeNonNeg(existingCycle.gmTotalCacheCreation)));
+    const additiveTotal = priorAdditive + addedAdditive;
+    if (additiveTotal > 0) {
+        next.gmTotalAllTokens = additiveTotal;
+    }
+    if (nextCacheRead > 0) { next.gmTotalCacheRead = nextCacheRead; }
+    if (nextCacheCreation > 0) { next.gmTotalCacheCreation = nextCacheCreation; }
+    if (nextThinking > 0) { next.gmTotalThinkingTokens = nextThinking; }
+    if (runningCost > 0) { next.estimatedCost = runningCost; }
+
+    const domSurf = dominantUsageSurface(next.surfaceBreakdown, next.surface);
+    if (domSurf) {
+        next.surface = domSurf;
+    }
+
+    return { cycle: next, appliedIds };
+}
+
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const STORAGE_KEY = 'dailyStoreState';
@@ -407,9 +822,235 @@ function normalizeMaxDays(days?: number): number {
 
 // ─── DailyStore Class ────────────────────────────────────────────────────────
 
+const CANONICAL_DATE_KEY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+function isCanonicalDateKey(raw: unknown): raw is string {
+    if (typeof raw !== 'string' || !CANONICAL_DATE_KEY_RE.test(raw)) { return false; }
+    const [y, m, d] = raw.split('-').map(Number);
+    if (y < 2000 || y > 2100 || m < 1 || m > 12 || d < 1 || d > 31) { return false; }
+    const dt = new Date(Date.UTC(y, m - 1, d));
+    return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
+}
+
+function safeNonNegUnknown(val: unknown): number {
+    return typeof val === 'number' && Number.isFinite(val) && val >= 0 ? val : 0;
+}
+
+function sanitizeOptionalNonNeg(val: unknown): number | undefined {
+    return typeof val === 'number' && Number.isFinite(val) && val >= 0 ? val : undefined;
+}
+
+function sanitizeSurfaceBucket(raw: unknown): SurfaceUsageStats | null {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) { return null; }
+    const s = raw as Record<string, unknown>;
+    return {
+        calls: safeNonNegUnknown(s.calls),
+        inputTokens: safeNonNegUnknown(s.inputTokens),
+        outputTokens: safeNonNegUnknown(s.outputTokens),
+        thinkingTokens: safeNonNegUnknown(s.thinkingTokens),
+        cacheReadTokens: safeNonNegUnknown(s.cacheReadTokens),
+        cacheCreationTokens: safeNonNegUnknown(s.cacheCreationTokens),
+        credits: safeNonNegUnknown(s.credits),
+        estimatedCost: safeNonNegUnknown(s.estimatedCost),
+    };
+}
+
+function sanitizeImportedCycleEntry(raw: unknown, dateKey: string): DailyCycleEntry | null {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) { return null; }
+    const c = raw as Record<string, unknown>;
+    const sanitized: DailyCycleEntry = {
+        startTime: typeof c.startTime === 'string' ? c.startTime : `${dateKey}T00:00:00`,
+        endTime: typeof c.endTime === 'string' ? c.endTime : `${dateKey}T23:59:59`,
+        totalReasoning: safeNonNegUnknown(c.totalReasoning),
+        totalToolCalls: safeNonNegUnknown(c.totalToolCalls),
+        totalErrors: safeNonNegUnknown(c.totalErrors),
+        totalInputTokens: safeNonNegUnknown(c.totalInputTokens),
+        totalOutputTokens: safeNonNegUnknown(c.totalOutputTokens),
+        estSteps: safeNonNegUnknown(c.estSteps),
+        modelNames: Array.isArray(c.modelNames)
+            ? c.modelNames.filter((n): n is string => typeof n === 'string').map(n => n.slice(0, 128))
+            : [],
+        ...(Array.isArray(c.triggeredBy)
+            ? { triggeredBy: c.triggeredBy.filter((n): n is string => typeof n === 'string').map(n => n.slice(0, 128)) }
+            : {}),
+    };
+    for (const k of [
+        'gmTotalCalls', 'gmTotalCredits', 'gmTotalTokens', 'gmTotalAllTokens', 'gmTotalCacheRead',
+        'gmTotalCacheCreation', 'gmTotalThinkingTokens', 'gmRetryTokens', 'gmRetryCredits', 'gmRetryCount', 'estimatedCost',
+    ] as const) {
+        const v = sanitizeOptionalNonNeg(c[k]);
+        if (v !== undefined) { (sanitized as unknown as Record<string, unknown>)[k] = v; }
+    }
+
+    if (typeof c.accountEmail === 'string' && c.accountEmail.trim()) {
+        sanitized.accountEmail = c.accountEmail;
+    }
+    if (typeof c.surface === 'string') {
+        const surf = normalizeUsageSurface(c.surface);
+        if (surf !== 'unknown') { sanitized.surface = surf; }
+    }
+    if (c.modelStats && typeof c.modelStats === 'object' && !Array.isArray(c.modelStats)) {
+        const ms: Record<string, ModelCycleStats> = {};
+        for (const [mk, mv] of Object.entries(c.modelStats as Record<string, unknown>)) {
+            if (!mk || mk === '__proto__' || mk === 'constructor' || mk === 'prototype') { continue; }
+            if (!mv || typeof mv !== 'object' || Array.isArray(mv)) { continue; }
+            const r = mv as Record<string, unknown>;
+            ms[mk] = {
+                reasoning: safeNonNegUnknown(r.reasoning),
+                toolCalls: safeNonNegUnknown(r.toolCalls),
+                errors: safeNonNegUnknown(r.errors),
+                estSteps: safeNonNegUnknown(r.estSteps),
+                inputTokens: safeNonNegUnknown(r.inputTokens),
+                outputTokens: safeNonNegUnknown(r.outputTokens),
+            };
+        }
+        sanitized.modelStats = ms;
+    }
+    if (c.gmModelStats && typeof c.gmModelStats === 'object' && !Array.isArray(c.gmModelStats)) {
+        const gms: Record<string, GMModelCycleStats> = {};
+        for (const [mk, mv] of Object.entries(c.gmModelStats as Record<string, unknown>)) {
+            if (!mk || mk === '__proto__' || mk === 'constructor' || mk === 'prototype') { continue; }
+            if (!mv || typeof mv !== 'object' || Array.isArray(mv)) { continue; }
+            const r = mv as Record<string, unknown>;
+            const entry: GMModelCycleStats = {
+                calls: safeNonNegUnknown(r.calls),
+                credits: safeNonNegUnknown(r.credits),
+                inputTokens: safeNonNegUnknown(r.inputTokens),
+                outputTokens: safeNonNegUnknown(r.outputTokens),
+                thinkingTokens: safeNonNegUnknown(r.thinkingTokens),
+                avgTTFT: safeNonNegUnknown(r.avgTTFT),
+                cacheHitRate: Math.min(1, safeNonNegUnknown(r.cacheHitRate)),
+            };
+            const cr = sanitizeOptionalNonNeg(r.cacheReadTokens);
+            if (cr !== undefined) { entry.cacheReadTokens = cr; }
+            const cc = sanitizeOptionalNonNeg(r.cacheCreationTokens);
+            if (cc !== undefined) { entry.cacheCreationTokens = cc; }
+            const ec = sanitizeOptionalNonNeg(r.estimatedCost);
+            if (ec !== undefined) { entry.estimatedCost = ec; }
+            if (r.costBackfilled === true) { entry.costBackfilled = true; }
+            const avgStr = sanitizeOptionalNonNeg(r.avgStreaming);
+            if (avgStr !== undefined) { entry.avgStreaming = avgStr; }
+            const avgSpd = sanitizeOptionalNonNeg(r.avgGenTokPerSec);
+            if (avgSpd !== undefined) { entry.avgGenTokPerSec = avgSpd; }
+            const tchr = sanitizeOptionalNonNeg(r.tokenCacheHitRate);
+            if (tchr !== undefined) { entry.tokenCacheHitRate = Math.min(1, tchr); }
+            gms[mk] = entry;
+        }
+        sanitized.gmModelStats = gms;
+    }
+    if (c.surfaceBreakdown && typeof c.surfaceBreakdown === 'object' && !Array.isArray(c.surfaceBreakdown)) {
+        const sb: Partial<Record<UsageSurface, SurfaceUsageStats>> = {};
+        for (const [sk, sv] of Object.entries(c.surfaceBreakdown as Record<string, unknown>)) {
+            const surf = normalizeUsageSurface(sk);
+            const cleanBucket = sanitizeSurfaceBucket(sv);
+            if (cleanBucket) { sb[surf] = cleanBucket; }
+        }
+        if (Object.keys(sb).length > 0) { sanitized.surfaceBreakdown = sb; }
+    }
+    if (c.workspaceBreakdown && typeof c.workspaceBreakdown === 'object' && !Array.isArray(c.workspaceBreakdown)) {
+        const filtered = Object.create(null) as Record<string, WorkspaceUsageStats>;
+        for (const [wk, wv] of Object.entries(c.workspaceBreakdown as Record<string, unknown>)) {
+            if (!wk || wk === '__proto__' || wk === 'constructor' || wk === 'prototype') { continue; }
+            if (!wv || typeof wv !== 'object' || Array.isArray(wv)) { continue; }
+            filtered[wk] = wv as WorkspaceUsageStats;
+        }
+        const wb = cloneWorkspaceBreakdown(filtered);
+        if (wb) { sanitized.workspaceBreakdown = wb; }
+    }
+    if (Array.isArray(c.recordedCallIds)) {
+        const ids = [...new Set(c.recordedCallIds.filter((id): id is string => typeof id === 'string').map(id => canonicalLogicalCallId(id)).filter(Boolean))];
+        if (ids.length > 0) { sanitized.recordedCallIds = ids; }
+    }
+    if (c.lateMergedCalls && typeof c.lateMergedCalls === 'object' && !Array.isArray(c.lateMergedCalls)) {
+        const lmc: Record<string, DailyMergedLateCall> = {};
+        for (const [cid, cv] of Object.entries(c.lateMergedCalls as Record<string, unknown>)) {
+            if (!cid || cid === '__proto__' || cid === 'constructor' || cid === 'prototype') { continue; }
+            if (!cv || typeof cv !== 'object' || Array.isArray(cv)) { continue; }
+            const r = cv as Record<string, unknown>;
+            const createdAt = typeof r.createdAt === 'string' && r.createdAt.trim() ? r.createdAt : `${dateKey}T00:00:00Z`;
+            const parsedMs = Date.parse(createdAt);
+            const createdAtMs = typeof r.createdAtMs === 'number' && Number.isFinite(r.createdAtMs) && r.createdAtMs >= 0
+                ? r.createdAtMs
+                : (Number.isFinite(parsedMs) ? parsedMs : 0);
+            const modelKey = typeof r.modelKey === 'string' && r.modelKey.trim() ? r.modelKey : 'Unknown';
+            lmc[cid] = {
+                callId: typeof r.callId === 'string' && r.callId.trim() ? r.callId : cid,
+                createdAt,
+                createdAtMs,
+                modelId: typeof r.modelId === 'string' && r.modelId.trim() ? r.modelId : modelKey,
+                modelKey,
+                inputTokens: safeNonNegUnknown(r.inputTokens),
+                outputTokens: safeNonNegUnknown(r.outputTokens),
+                thinkingTokens: safeNonNegUnknown(r.thinkingTokens),
+                cacheReadTokens: safeNonNegUnknown(r.cacheReadTokens),
+                cacheCreationTokens: safeNonNegUnknown(r.cacheCreationTokens),
+                credits: safeNonNegUnknown(r.credits),
+                estimatedCost: safeNonNegUnknown(r.estimatedCost),
+                ...(sanitizeOptionalNonNeg(r.ttftSeconds) !== undefined ? { ttftSeconds: sanitizeOptionalNonNeg(r.ttftSeconds) } : {}),
+                ...(sanitizeOptionalNonNeg(r.streamingSeconds) !== undefined ? { streamingSeconds: sanitizeOptionalNonNeg(r.streamingSeconds) } : {}),
+                ...(typeof r.surface === 'string' ? { surface: normalizeUsageSurface(r.surface) } : {}),
+                ...(typeof r.accountEmail === 'string' ? { accountEmail: r.accountEmail } : {}),
+                ...(typeof r.account === 'string' ? { account: r.account } : {}),
+                ...(typeof r.workspace === 'string' ? { workspace: r.workspace } : {}),
+                ...(typeof r.cascadeId === 'string' ? { cascadeId: r.cascadeId } : {}),
+                ...(typeof r.authority === 'string' ? { authority: r.authority } : {}),
+                ...(r.unpriced === true ? { unpriced: true } : {}),
+                ...(r.fromDaySnapshot === true ? { fromDaySnapshot: true } : {}),
+            };
+        }
+        if (Object.keys(lmc).length > 0) { sanitized.lateMergedCalls = lmc; }
+    }
+    return sanitized;
+}
+
+function sanitizeImportedDailyRecord(dateKey: string, raw: unknown): DailyRecord | null {
+    if (!isCanonicalDateKey(dateKey)) { return null; }
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) { return null; }
+    const rec = raw as Record<string, unknown>;
+    if (!Array.isArray(rec.cycles)) { return null; }
+    const cycles: DailyCycleEntry[] = [];
+    for (const c of rec.cycles) {
+        const clean = sanitizeImportedCycleEntry(c, dateKey);
+        if (clean) { cycles.push(clean); }
+    }
+    return { date: dateKey, cycles };
+}
+
+function populateCycleGmFields(
+    entry: DailyCycleEntry,
+    gmSummary: GMSummary | null | undefined,
+    costTotal?: number,
+    costPerModel?: Record<string, number>,
+): void {
+    if (gmSummary) {
+        entry.gmTotalCalls = gmSummary.totalCalls;
+        entry.gmTotalCredits = gmSummary.totalCredits;
+        entry.gmTotalTokens = gmSummary.totalInputTokens + gmSummary.totalOutputTokens;
+        const additiveTotal = computeAdditiveTokens({
+            inputTokens: gmSummary.totalInputTokens,
+            outputTokens: gmSummary.totalOutputTokens,
+            cacheReadTokens: gmSummary.totalCacheRead,
+            cacheCreationTokens: gmSummary.totalCacheCreation,
+        });
+        if (additiveTotal > 0) { entry.gmTotalAllTokens = additiveTotal; }
+        if (gmSummary.totalCacheRead > 0) { entry.gmTotalCacheRead = gmSummary.totalCacheRead; }
+        if (gmSummary.totalCacheCreation > 0) { entry.gmTotalCacheCreation = gmSummary.totalCacheCreation; }
+        if (gmSummary.totalThinkingTokens > 0) { entry.gmTotalThinkingTokens = gmSummary.totalThinkingTokens; }
+        if (gmSummary.totalRetryTokens > 0) {
+            entry.gmRetryTokens = gmSummary.totalRetryTokens;
+            entry.gmRetryCredits = gmSummary.totalRetryCredits;
+            entry.gmRetryCount = gmSummary.totalRetryCount;
+        }
+    }
+    if (costTotal !== undefined && costTotal > 0) { entry.estimatedCost = costTotal; }
+    entry.gmModelStats = buildGMPerModelStats(gmSummary ?? null, costPerModel);
+}
+
 export class DailyStore {
     private _records = new Map<string, DailyRecord>();
     private _maxDays = DEFAULT_MAX_DAYS;
+    private _lateWrite: Promise<void> = Promise.resolve();
+    get hasBackingStore(): boolean { return this._globalState !== null; }
     private _globalState: { get<T>(k: string, d: T): T; update(k: string, v: unknown): PromiseLike<void> } | null = null;
 
     constructor(maxDays?: number) {
@@ -441,9 +1082,12 @@ export class DailyStore {
             this._maxDays = normalizeMaxDays(options.maxDays);
         }
         const saved = globalState.get<DailyStoreState | null>(STORAGE_KEY, null);
-        if (saved && saved.version === 1 && saved.records) {
+        if (saved && saved.version === 1 && saved.records && typeof saved.records === 'object') {
             for (const [date, record] of Object.entries(saved.records)) {
-                this._records.set(date, record);
+                const sanitized = sanitizeImportedDailyRecord(date, record);
+                if (sanitized) {
+                    this._records.set(sanitized.date, sanitized);
+                }
             }
         }
         this._trimOld();
@@ -452,14 +1096,18 @@ export class DailyStore {
     /**
      * Merge external records into this store (for data migration/recovery).
      * Only adds records for dates not already present — existing data is never overwritten.
+     * Validates canonical YYYY-MM-DD dates and finite non-negative numeric fields to prevent
+     * stored HTML/XSS injection or NaN corruption from malformed recovery payloads.
      * Returns the number of records added.
      */
     mergeRecords(externalState: DailyStoreState): number {
-        if (!externalState || externalState.version !== 1 || !externalState.records) { return 0; }
+        if (!externalState || externalState.version !== 1 || !externalState.records || typeof externalState.records !== 'object') { return 0; }
         let added = 0;
         for (const [date, record] of Object.entries(externalState.records)) {
-            if (!this._records.has(date)) {
-                this._records.set(date, record);
+            const sanitized = sanitizeImportedDailyRecord(date, record);
+            if (!sanitized) { continue; }
+            if (!this._records.has(sanitized.date)) {
+                this._records.set(sanitized.date, sanitized);
                 added++;
             }
         }
@@ -569,40 +1217,7 @@ export class DailyStore {
             modelStats: buildPerModelStats(activitySummary.modelStats),
         };
 
-        if (gmSummary) {
-            entry.gmTotalCalls = gmSummary.totalCalls;
-            entry.gmTotalCredits = gmSummary.totalCredits;
-            entry.gmTotalTokens = gmSummary.totalInputTokens + gmSummary.totalOutputTokens;
-            const additiveTotal = computeAdditiveTokens({
-                inputTokens: gmSummary.totalInputTokens,
-                outputTokens: gmSummary.totalOutputTokens,
-                cacheReadTokens: gmSummary.totalCacheRead,
-                cacheCreationTokens: gmSummary.totalCacheCreation,
-            });
-            if (additiveTotal > 0) {
-                entry.gmTotalAllTokens = additiveTotal;
-            }
-            if (gmSummary.totalCacheRead > 0) {
-                entry.gmTotalCacheRead = gmSummary.totalCacheRead;
-            }
-            if (gmSummary.totalCacheCreation > 0) {
-                entry.gmTotalCacheCreation = gmSummary.totalCacheCreation;
-            }
-            if (gmSummary.totalThinkingTokens > 0) {
-                entry.gmTotalThinkingTokens = gmSummary.totalThinkingTokens;
-            }
-            if (gmSummary.totalRetryTokens > 0) {
-                entry.gmRetryTokens = gmSummary.totalRetryTokens;
-                entry.gmRetryCredits = gmSummary.totalRetryCredits;
-                entry.gmRetryCount = gmSummary.totalRetryCount;
-            }
-        }
-
-        if (costTotal !== undefined && costTotal > 0) {
-            entry.estimatedCost = costTotal;
-        }
-
-        entry.gmModelStats = buildGMPerModelStats(gmSummary, costPerModel);
+        populateCycleGmFields(entry, gmSummary, costTotal, costPerModel);
 
         if (meta?.accountEmail) {
             entry.accountEmail = meta.accountEmail;
@@ -615,15 +1230,251 @@ export class DailyStore {
         if (clonedBreakdown) {
             entry.surfaceBreakdown = clonedBreakdown;
         }
+        const clonedWorkspaceBreakdown = cloneWorkspaceBreakdown(meta?.workspaceBreakdown);
+        if (clonedWorkspaceBreakdown) {
+            entry.workspaceBreakdown = clonedWorkspaceBreakdown;
+        }
+        if (Array.isArray(meta?.recordedCallIds) && meta.recordedCallIds.length > 0) {
+            const dedupedIds = [...new Set(meta.recordedCallIds.map(id => canonicalLogicalCallId(id)).filter(Boolean))];
+            if (dedupedIds.length > 0) {
+                entry.recordedCallIds = dedupedIds;
+            }
+        }
 
+        if (meta?.snapshotCalls?.length) {
+            entry.lateMergedCalls = Object.fromEntries(meta.snapshotCalls.map(call => [
+                canonicalLogicalCallId(call.callId), { ...call, fromDaySnapshot: true },
+            ]));
+        }
         if (append) {
             record.cycles.push(entry);
+        } else if (meta?.snapshotCalls?.length) {
+            // Another host can archive (or late-merge) this day first. Carry
+            // forward its distinct contributions when a daily snapshot replaces it.
+            const cached = record.cycles.flatMap(c => Object.values(c.lateMergedCalls ?? {}));
+            const reconciled = mergeLateCallsIntoCycle(entry, cached).cycle;
+            record.cycles = [reconciled];
         } else {
-            // One entry per day — replace existing
             record.cycles = [entry];
+        }
+        // Only recent dates can race normal rollover. Historical days keep their
+        // aggregates and dedup IDs; original per-call projections need no longer occupy disk.
+        for (const oldDate of [...this._records.keys()].sort().slice(0, -2)) {
+            const old = this._records.get(oldDate)!;
+            for (const c of old.cycles) {
+                if (!c.lateMergedCalls) { continue; }
+                for (const [id, call] of Object.entries(c.lateMergedCalls)) {
+                    if (call.fromDaySnapshot) { delete c.lateMergedCalls[id]; }
+                }
+                if (!Object.keys(c.lateMergedCalls).length) { delete c.lateMergedCalls; }
+            }
         }
         this._trimOld();
         this._persist();
+    }
+
+    /**
+     * Idempotently merge late-arriving calls into a historical date's existing archive.
+     * - Preserves existing activity fields and existing archived GM calls (NEVER overwrites `record.cycles = [entry]`).
+     * - Deduplicates strictly by durable canonical logical call ID (NEVER double-counts on replay).
+     * - Rolls back in-memory mutation if synchronous persistence throws.
+     */
+    private _mergeLateDayCallsInternal(
+        dateKey: string,
+        calls: readonly DailyMergedLateCall[],
+        options?: {
+            defaultSurface?: UsageSurface;
+            accountEmail?: string;
+        },
+    ): { result: MergeLateDayCallsResult; rollback: () => void } {
+        const noopRollback = () => {};
+        if (!dateKey || calls.length === 0) {
+            return {
+                result: {
+                    appliedCalls: 0,
+                    appliedCallIds: [],
+                    persisted: true,
+                    persistPromise: Promise.resolve(true),
+                },
+                rollback: noopRollback,
+            };
+        }
+
+        const prevRecord = this._records.get(dateKey);
+        const backupRecord: DailyRecord | null = prevRecord
+            ? { date: prevRecord.date, cycles: prevRecord.cycles.map(cloneDailyCycleEntry) }
+            : null;
+
+        let record = prevRecord;
+        if (!record) {
+            record = { date: dateKey, cycles: [] };
+            this._records.set(dateKey, record);
+        }
+
+        // Collect already-recorded call IDs across ALL cycles on this date
+        const recordSeenIds = new Set<string>();
+        for (const c of record.cycles) {
+            for (const id of collectCycleRecordedCallIds(c)) {
+                recordSeenIds.add(id);
+            }
+        }
+
+        let targetIdx = record.cycles.findIndex(c => {
+            const surfs = getCycleSurfaces(c);
+            return !(surfs.length === 1 && surfs[0] === 'cli');
+        });
+        if (targetIdx < 0 && record.cycles.length > 0) {
+            targetIdx = 0;
+        }
+
+        const baseCycle: DailyCycleEntry = targetIdx >= 0
+            ? record.cycles[targetIdx]
+            : {
+                startTime: `${dateKey}T00:00:00`,
+                endTime: `${dateKey}T23:59:59`,
+                totalReasoning: 0,
+                totalToolCalls: 0,
+                totalErrors: 0,
+                totalInputTokens: 0,
+                totalOutputTokens: 0,
+                estSteps: 0,
+                modelNames: [],
+                ...(options?.accountEmail ? { accountEmail: options.accountEmail } : {}),
+            };
+
+        const { cycle: mergedCycle, appliedIds } = mergeLateCallsIntoCycle(baseCycle, calls, {
+            defaultSurface: options?.defaultSurface,
+            externalSeenIds: recordSeenIds,
+        });
+
+        if (appliedIds.length === 0) {
+            // Replay of already-archived calls — zero change!
+            if (!backupRecord) {
+                this._records.delete(dateKey);
+            }
+            return {
+                result: {
+                    appliedCalls: 0,
+                    appliedCallIds: [],
+                    persisted: true,
+                    persistPromise: Promise.resolve(true),
+                },
+                rollback: noopRollback,
+            };
+        }
+
+        const appliedIdx = targetIdx >= 0 ? targetIdx : record.cycles.length;
+        if (targetIdx >= 0) {
+            record.cycles[targetIdx] = mergedCycle;
+        } else {
+            record.cycles.push(mergedCycle);
+        }
+
+        const rollback = () => {
+            const currentRec = this._records.get(dateKey);
+            if (!currentRec || currentRec.cycles[appliedIdx] !== mergedCycle) {
+                return;
+            }
+            if (backupRecord) {
+                this._records.set(dateKey, backupRecord);
+            } else {
+                this._records.delete(dateKey);
+            }
+        };
+
+        this._trimOld();
+        const persistOutcome = this._persistWithOutcome();
+        if (!persistOutcome.syncOk) {
+            rollback();
+            return {
+                result: {
+                    appliedCalls: 0,
+                    appliedCallIds: [],
+                    persisted: false,
+                    persistPromise: Promise.resolve(false),
+                },
+                rollback: noopRollback,
+            };
+        }
+
+        return {
+            result: {
+                appliedCalls: appliedIds.length,
+                appliedCallIds: appliedIds,
+                persisted: true,
+                persistPromise: persistOutcome.promise,
+            },
+            rollback,
+        };
+    }
+
+    mergeLateDayCalls(
+        dateKey: string,
+        calls: readonly DailyMergedLateCall[],
+        options?: {
+            defaultSurface?: UsageSurface;
+            accountEmail?: string;
+        },
+    ): MergeLateDayCallsResult {
+        return this._mergeLateDayCallsInternal(dateKey, calls, options).result;
+    }
+
+    /**
+     * Async variant of {@link mergeLateDayCalls} that awaits backing persistence confirmation
+     * (including an optional `confirmPersist` commit check such as `DurableState.flush()`).
+     * Rolls back the in-memory record mutation if persistence fails so retries re-apply cleanly.
+     */
+    async mergeLateDayCallsAsync(
+        dateKey: string,
+        calls: readonly DailyMergedLateCall[],
+        options?: {
+            defaultSurface?: UsageSurface;
+            accountEmail?: string;
+            confirmPersist?: () => boolean | Promise<boolean>;
+        },
+    ): Promise<MergeLateDayCallsAsyncResult> {
+        // Wait for the previous optimistic change to commit or roll back before
+        // checking duplicate IDs against the in-memory archive.
+        const previous = this._lateWrite;
+        let release!: () => void;
+        this._lateWrite = new Promise<void>(resolve => { release = resolve; });
+        await previous;
+        try {
+            return await this._commitLateDayCalls(dateKey, calls, options);
+        } finally {
+            release();
+        }
+    }
+
+    private async _commitLateDayCalls(
+        dateKey: string,
+        calls: readonly DailyMergedLateCall[],
+        options?: { defaultSurface?: UsageSurface; accountEmail?: string; confirmPersist?: () => boolean | Promise<boolean> },
+    ): Promise<MergeLateDayCallsAsyncResult> {
+        const { result: res, rollback } = this._mergeLateDayCallsInternal(dateKey, calls, options);
+        if (!res.persisted) {
+            return { appliedCalls: 0, appliedCallIds: [], committed: false };
+        }
+        // A flush may complete before an async backing bucket has even queued
+        // this write. Require the receipt for the write itself as well.
+        try {
+            const [updated, confirmed] = await Promise.all([
+                res.persistPromise,
+                options?.confirmPersist?.() ?? true,
+            ]);
+            if (!updated || !confirmed) {
+                rollback();
+                return { appliedCalls: 0, appliedCallIds: [], committed: false };
+            }
+        } catch {
+            rollback();
+            return { appliedCalls: 0, appliedCallIds: [], committed: false };
+        }
+        return {
+            appliedCalls: res.appliedCalls,
+            appliedCallIds: res.appliedCallIds,
+            committed: true,
+        };
     }
 
     /**
@@ -660,39 +1511,7 @@ export class DailyStore {
             modelStats: buildPerModelStats(s.modelStats),
         };
 
-        if (gmSummary) {
-            cycle.gmTotalCalls = gmSummary.totalCalls;
-            cycle.gmTotalCredits = gmSummary.totalCredits;
-            cycle.gmTotalTokens = gmSummary.totalInputTokens + gmSummary.totalOutputTokens;
-            const additiveTotal = computeAdditiveTokens({
-                inputTokens: gmSummary.totalInputTokens,
-                outputTokens: gmSummary.totalOutputTokens,
-                cacheReadTokens: gmSummary.totalCacheRead,
-                cacheCreationTokens: gmSummary.totalCacheCreation,
-            });
-            if (additiveTotal > 0) {
-                cycle.gmTotalAllTokens = additiveTotal;
-            }
-            if (gmSummary.totalCacheRead > 0) {
-                cycle.gmTotalCacheRead = gmSummary.totalCacheRead;
-            }
-            if (gmSummary.totalCacheCreation > 0) {
-                cycle.gmTotalCacheCreation = gmSummary.totalCacheCreation;
-            }
-            if (gmSummary.totalThinkingTokens > 0) {
-                cycle.gmTotalThinkingTokens = gmSummary.totalThinkingTokens;
-            }
-            if (gmSummary.totalRetryTokens > 0) {
-                cycle.gmRetryTokens = gmSummary.totalRetryTokens;
-                cycle.gmRetryCredits = gmSummary.totalRetryCredits;
-                cycle.gmRetryCount = gmSummary.totalRetryCount;
-            }
-        }
-
-        if (costTotal !== undefined && costTotal > 0) {
-            cycle.estimatedCost = costTotal;
-        }
-        cycle.gmModelStats = buildGMPerModelStats(gmSummary, costPerModel);
+        populateCycleGmFields(cycle, gmSummary, costTotal, costPerModel);
         if (accountEmail) { cycle.accountEmail = accountEmail; }
         const normSurface = normalizeUsageSurface(surface);
         if (normSurface !== 'unknown') { cycle.surface = normSurface; }
@@ -842,9 +1661,12 @@ export class DailyStore {
     /** Restore the full in-memory snapshot and persist it back to storage. */
     restoreSnapshot(state: DailyStoreState): void {
         this._records.clear();
-        if (state && state.version === 1 && state.records) {
+        if (state && state.version === 1 && state.records && typeof state.records === 'object') {
             for (const [date, record] of Object.entries(state.records)) {
-                this._records.set(date, record);
+                const sanitized = sanitizeImportedDailyRecord(date, record);
+                if (sanitized) {
+                    this._records.set(sanitized.date, sanitized);
+                }
             }
         }
         this._trimOld();
@@ -860,6 +1682,24 @@ export class DailyStore {
         const excess = sorted.length - this._maxDays;
         for (let i = 0; i < excess; i++) {
             this._records.delete(sorted[i]);
+        }
+    }
+
+    private _persistWithOutcome(): { syncOk: boolean; promise: Promise<boolean> } {
+        if (!this._globalState) {
+            return { syncOk: true, promise: Promise.resolve(true) };
+        }
+        try {
+            const ret = this._globalState.update(STORAGE_KEY, this.serialize());
+            const promise = Promise.resolve(ret).then((val: unknown) => {
+                if (val && typeof val === 'object' && 'committed' in val) {
+                    return Boolean((val as { committed?: unknown }).committed);
+                }
+                return true;
+            }, () => false);
+            return { syncOk: true, promise };
+        } catch {
+            return { syncOk: false, promise: Promise.resolve(false) };
         }
     }
 
